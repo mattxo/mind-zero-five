@@ -13,8 +13,10 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/font"
+	"gioui.org/font/gofont"
 	"gioui.org/layout"
 	"gioui.org/op"
+	"gioui.org/text"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
@@ -116,6 +118,7 @@ func main() {
 	}
 
 	theme = material.NewTheme()
+	theme.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
 	theme.Palette.Bg = color.NRGBA{R: 0x12, G: 0x12, B: 0x12, A: 0xFF}
 	theme.Palette.Fg = color.NRGBA{R: 0xE0, G: 0xE0, B: 0xE0, A: 0xFF}
 	theme.Palette.ContrastBg = color.NRGBA{R: 0x30, G: 0x60, B: 0xA0, A: 0xFF}
