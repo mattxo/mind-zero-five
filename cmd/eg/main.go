@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"mind-zero-five/internal/db"
+	"mind-zero-five/pkg/actor"
 	"mind-zero-five/pkg/authority"
 	"mind-zero-five/pkg/eventgraph"
 	"mind-zero-five/pkg/task"
@@ -30,6 +31,7 @@ func main() {
 	events := eventgraph.NewPgStore(pool)
 	tasks := task.NewPgStore(pool)
 	auth := authority.NewPgStore(pool)
+	actors := actor.NewPgStore(pool)
 
 	switch os.Args[1] {
 	case "event":
@@ -38,10 +40,14 @@ func main() {
 		handleTask(ctx, tasks, os.Args[2:])
 	case "authority":
 		handleAuthority(ctx, auth, os.Args[2:])
+	case "actor":
+		handleActor(ctx, actors, os.Args[2:])
+	case "policy":
+		handlePolicy(ctx, auth, os.Args[2:])
 	case "status":
 		handleStatus(ctx, events, tasks, auth)
 	case "init":
-		handleInit(ctx, events, tasks, auth)
+		handleInit(ctx, events, tasks, auth, actors)
 	default:
 		usage()
 		os.Exit(1)
@@ -373,7 +379,96 @@ func handleStatus(ctx context.Context, events eventgraph.EventStore, tasks task.
 	printJSON(status)
 }
 
-func handleInit(ctx context.Context, events eventgraph.EventStore, tasks task.Store, auth authority.Store) {
+func handleActor(ctx context.Context, store actor.Store, args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: eg actor <list|register|get>")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "list":
+		actors, err := store.List(ctx)
+		if err != nil {
+			fatal("list actors: %v", err)
+		}
+		printJSON(actors)
+
+	case "register":
+		flags := parseFlags(args[1:])
+		actorType := flags["type"]
+		name := flags["name"]
+		if actorType == "" || name == "" {
+			fatal("--type and --name are required")
+		}
+		email := flags["email"]
+		a, err := store.Register(ctx, actorType, name, email)
+		if err != nil {
+			fatal("register actor: %v", err)
+		}
+		printJSON(a)
+
+	case "get":
+		if len(args) < 2 {
+			fatal("Usage: eg actor get <id>")
+		}
+		a, err := store.Get(ctx, args[1])
+		if err != nil {
+			fatal("get actor: %v", err)
+		}
+		printJSON(a)
+
+	default:
+		fatal("unknown actor command: %s", args[0])
+	}
+}
+
+func handlePolicy(ctx context.Context, store authority.Store, args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: eg policy <list|create|match>")
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "list":
+		policies, err := store.ListPolicies(ctx)
+		if err != nil {
+			fatal("list policies: %v", err)
+		}
+		printJSON(policies)
+
+	case "create":
+		flags := parseFlags(args[1:])
+		action := flags["action"]
+		approver := flags["approver"]
+		if action == "" || approver == "" {
+			fatal("--action and --approver (actor ID) are required")
+		}
+		levelStr := flags["level"]
+		if levelStr == "" {
+			levelStr = "required"
+		}
+		p, err := store.CreatePolicy(ctx, action, approver, authority.Level(levelStr))
+		if err != nil {
+			fatal("create policy: %v", err)
+		}
+		printJSON(p)
+
+	case "match":
+		if len(args) < 2 {
+			fatal("Usage: eg policy match <action>")
+		}
+		p, err := store.MatchPolicy(ctx, args[1])
+		if err != nil {
+			fatal("match policy: %v", err)
+		}
+		printJSON(p)
+
+	default:
+		fatal("unknown policy command: %s", args[0])
+	}
+}
+
+func handleInit(ctx context.Context, events eventgraph.EventStore, tasks task.Store, auth authority.Store, actors actor.Store) {
 	if err := events.EnsureTable(ctx); err != nil {
 		fatal("ensure events table: %v", err)
 	}
@@ -382,6 +477,9 @@ func handleInit(ctx context.Context, events eventgraph.EventStore, tasks task.St
 	}
 	if err := auth.EnsureTable(ctx); err != nil {
 		fatal("ensure authority table: %v", err)
+	}
+	if err := actors.EnsureTable(ctx); err != nil {
+		fatal("ensure actors table: %v", err)
 	}
 	fmt.Println(`{"status":"ok","message":"all tables initialized"}`)
 }
@@ -432,6 +530,8 @@ Commands:
   event      Event operations (create, list, get, ancestors, descendants, search, types, sources, verify)
   task       Task operations (create, list, get, update, complete)
   authority  Authority operations (request, list, check, resolve)
+  actor      Actor operations (list, register, get)
+  policy     Policy operations (list, create, match)
   status     Show system summary
   init       Initialize database tables`)
 }

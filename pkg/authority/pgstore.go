@@ -36,6 +36,23 @@ func (s *PgStore) EnsureTable(ctx context.Context) error {
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status, created_at)`)
+	if err != nil {
+		return err
+	}
+
+	// Policies table
+	_, err = s.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS authority_policies (
+			id          TEXT PRIMARY KEY,
+			action      TEXT NOT NULL,
+			approver_id TEXT NOT NULL,
+			level       TEXT NOT NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_action ON authority_policies(action)`)
 	return err
 }
 
@@ -143,6 +160,69 @@ func (s *PgStore) PendingCount(ctx context.Context) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM approval_requests WHERE status = 'pending'`).Scan(&n)
 	return n, err
+}
+
+// CreatePolicy creates or updates a policy for an action. Idempotent on action.
+func (s *PgStore) CreatePolicy(ctx context.Context, action, approverID string, level Level) (*Policy, error) {
+	id := uuid.Must(uuid.NewV7()).String()
+	now := time.Now().Truncate(time.Microsecond)
+
+	var p Policy
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO authority_policies (id, action, approver_id, level, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (action) DO UPDATE SET approver_id = EXCLUDED.approver_id, level = EXCLUDED.level
+		RETURNING id, action, approver_id, level, created_at`,
+		id, action, approverID, string(level), now).
+		Scan(&p.ID, &p.Action, &p.ApproverID, &p.Level, &p.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create policy for %s: %w", action, err)
+	}
+	return &p, nil
+}
+
+// MatchPolicy finds the policy for an action. Tries exact match first, then "*" fallback.
+func (s *PgStore) MatchPolicy(ctx context.Context, action string) (*Policy, error) {
+	// Exact match first
+	var p Policy
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, action, approver_id, level, created_at
+		FROM authority_policies WHERE action = $1`, action).
+		Scan(&p.ID, &p.Action, &p.ApproverID, &p.Level, &p.CreatedAt)
+	if err == nil {
+		return &p, nil
+	}
+
+	// Wildcard fallback
+	err = s.pool.QueryRow(ctx, `
+		SELECT id, action, approver_id, level, created_at
+		FROM authority_policies WHERE action = '*'`).
+		Scan(&p.ID, &p.Action, &p.ApproverID, &p.Level, &p.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("no policy for action %s: %w", action, err)
+	}
+	return &p, nil
+}
+
+// ListPolicies returns all policies.
+func (s *PgStore) ListPolicies(ctx context.Context) ([]Policy, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, action, approver_id, level, created_at
+		FROM authority_policies ORDER BY action`)
+	if err != nil {
+		return nil, fmt.Errorf("list policies: %w", err)
+	}
+	defer rows.Close()
+
+	var policies []Policy
+	for rows.Next() {
+		var p Policy
+		if err := rows.Scan(&p.ID, &p.Action, &p.ApproverID, &p.Level, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		policies = append(policies, p)
+	}
+	return policies, rows.Err()
 }
 
 func scanRequestRows(rows interface {

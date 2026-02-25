@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"mind-zero-five/pkg/authority"
 	"mind-zero-five/pkg/eventgraph"
@@ -16,15 +17,17 @@ type Mind struct {
 	bus     *eventgraph.Bus
 	tasks   task.Store
 	auth    authority.Store
+	actorID string // this mind's actor ID, for policy matching
 	repoDir string
 }
 
 // New creates a Mind.
-func New(bus *eventgraph.Bus, tasks task.Store, auth authority.Store, repoDir string) *Mind {
+func New(bus *eventgraph.Bus, tasks task.Store, auth authority.Store, actorID, repoDir string) *Mind {
 	return &Mind{
 		bus:     bus,
 		tasks:   tasks,
 		auth:    auth,
+		actorID: actorID,
 		repoDir: repoDir,
 	}
 }
@@ -65,6 +68,8 @@ func (m *Mind) handle(ctx context.Context, e *eventgraph.Event) {
 	switch e.Type {
 	case "task.created":
 		m.onTaskCreated(ctx, e)
+	case "authority.resolved":
+		m.onAuthorityResolved(ctx, e)
 	}
 }
 
@@ -230,18 +235,80 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 		deployCauses = []string{deployEvent.ID}
 	}
 
-	// Auto-restart: replace the running process with the new binary
-	log.Printf("mind: restarting with new binary after task %s", t.ID)
+	// Request authority to restart — policy determines if self-approved or needs human
+	m.requestRestart(ctx, t, deployCauses)
+}
+
+func (m *Mind) requestRestart(ctx context.Context, t *task.Task, causes []string) {
+	req, err := m.auth.Create(ctx, "restart",
+		fmt.Sprintf("Task completed: %s. New binaries built.", t.Subject),
+		"mind", authority.Required)
+	if err != nil {
+		log.Printf("mind: request restart authority: %v", err)
+		return
+	}
+
+	reqEvent, _ := m.logEvent(ctx, "authority.requested", map[string]any{
+		"task_id":      t.ID,
+		"authority_id": req.ID,
+		"action":       "restart",
+	}, causes)
+
+	reqCauses := causes
+	if reqEvent != nil {
+		reqCauses = []string{reqEvent.ID}
+	}
+
+	// Check policy — can the mind self-approve?
+	policy, err := m.auth.MatchPolicy(ctx, "restart")
+	if err != nil {
+		log.Printf("mind: no policy for restart, leaving pending for human: %v", err)
+		return
+	}
+
+	if policy.ApproverID == m.actorID {
+		// Self-approve: the policy says the mind can approve its own restarts
+		_, err := m.auth.Resolve(ctx, req.ID, true)
+		if err != nil {
+			log.Printf("mind: self-approve restart: %v", err)
+			return
+		}
+		log.Printf("mind: self-approved restart (policy: %s)", policy.Action)
+		m.logEvent(ctx, "authority.self_approved", map[string]any{
+			"authority_id": req.ID,
+			"policy_id":    policy.ID,
+			"action":       "restart",
+		}, reqCauses)
+
+		m.doRestart(ctx, req.ID, reqCauses)
+	}
+	// Otherwise: leave pending, wait for authority.resolved event from human
+}
+
+func (m *Mind) onAuthorityResolved(ctx context.Context, e *eventgraph.Event) {
+	authID, _ := e.Content["authority_id"].(string)
+	approved, _ := e.Content["approved"].(bool)
+	action, _ := e.Content["action"].(string)
+
+	if !approved || !strings.Contains(action, "restart") {
+		return
+	}
+
+	log.Printf("mind: restart approved (authority %s), deploying", authID)
+	m.doRestart(ctx, authID, []string{e.ID})
+}
+
+func (m *Mind) doRestart(ctx context.Context, authID string, causes []string) {
 	m.logEvent(ctx, "deploy.started", map[string]any{
-		"task_id": t.ID,
-	}, deployCauses)
+		"authority_id": authID,
+	}, causes)
 
 	if err := RestartSelf(); err != nil {
 		log.Printf("mind: restart failed: %v", err)
 		m.logEvent(ctx, "deploy.failed", map[string]any{
-			"task_id": t.ID,
-			"error":   err.Error(),
-		}, deployCauses)
+			"authority_id": authID,
+			"error":        err.Error(),
+		}, causes)
 	}
 }
 

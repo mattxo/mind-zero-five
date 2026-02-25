@@ -10,6 +10,7 @@ import (
 
 	"mind-zero-five/internal/api"
 	"mind-zero-five/internal/db"
+	"mind-zero-five/pkg/actor"
 	"mind-zero-five/pkg/authority"
 	"mind-zero-five/pkg/eventgraph"
 	"mind-zero-five/pkg/mind"
@@ -29,6 +30,7 @@ func main() {
 	events := eventgraph.NewPgStore(pool)
 	tasks := task.NewPgStore(pool)
 	auth := authority.NewPgStore(pool)
+	actors := actor.NewPgStore(pool)
 
 	// Ensure tables exist
 	if err := events.EnsureTable(ctx); err != nil {
@@ -39,6 +41,28 @@ func main() {
 	}
 	if err := auth.EnsureTable(ctx); err != nil {
 		log.Fatalf("ensure authority table: %v", err)
+	}
+	if err := actors.EnsureTable(ctx); err != nil {
+		log.Fatalf("ensure actors table: %v", err)
+	}
+
+	// Register core actors
+	mattActor, err := actors.Register(ctx, "human", "matt", "matt_2304@hotmail.com")
+	if err != nil {
+		log.Fatalf("register matt actor: %v", err)
+	}
+	mindActor, err := actors.Register(ctx, "mind", "mind", "")
+	if err != nil {
+		log.Fatalf("register mind actor: %v", err)
+	}
+	log.Printf("actors: matt=%s mind=%s", mattActor.ID, mindActor.ID)
+
+	// Seed default policies (idempotent — upserts on action)
+	if _, err := auth.CreatePolicy(ctx, "restart", mindActor.ID, authority.Notification); err != nil {
+		log.Fatalf("seed restart policy: %v", err)
+	}
+	if _, err := auth.CreatePolicy(ctx, "*", mattActor.ID, authority.Required); err != nil {
+		log.Fatalf("seed default policy: %v", err)
 	}
 
 	// Wrap EventStore in Bus for in-process event subscription
@@ -53,7 +77,7 @@ func main() {
 		if repoDir == "" {
 			repoDir = "/usr/local/share/mz5-source"
 		}
-		m := mind.New(bus, tasks, auth, repoDir)
+		m := mind.New(bus, tasks, auth, mindActor.ID, repoDir)
 		go m.Run(ctx)
 		log.Println("mind: enabled")
 	}

@@ -29,6 +29,15 @@ type Request struct {
 	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
 }
 
+// Policy defines who can approve a given action and at what level.
+type Policy struct {
+	ID         string    `json:"id"`
+	Action     string    `json:"action"`      // exact match or "*" wildcard
+	ApproverID string    `json:"approver_id"` // actor ID of the approver
+	Level      Level     `json:"level"`       // default level for this action
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 // Store is the contract for authority persistence.
 type Store interface {
 	Create(ctx context.Context, action, description, source string, level Level) (*Request, error)
@@ -37,5 +46,11 @@ type Store interface {
 	Pending(ctx context.Context) ([]Request, error)
 	Recent(ctx context.Context, limit int) ([]Request, error)
 	PendingCount(ctx context.Context) (int, error)
+
+	// Policies
+	CreatePolicy(ctx context.Context, action, approverID string, level Level) (*Policy, error)
+	MatchPolicy(ctx context.Context, action string) (*Policy, error)
+	ListPolicies(ctx context.Context) ([]Policy, error)
+
 	EnsureTable(ctx context.Context) error
 }
