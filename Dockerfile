@@ -10,7 +10,7 @@ RUN GOOS=js GOARCH=wasm go build -o web/ui.wasm ./cmd/ui
 RUN cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/wasm_exec.js
 
 FROM golang:1.24-alpine
-RUN apk add --no-cache ca-certificates nodejs npm git openssh-client bash
+RUN apk add --no-cache ca-certificates nodejs npm git openssh-client bash su-exec
 RUN npm install -g @anthropic-ai/claude-code
 
 RUN adduser -D -h /home/app app
@@ -21,11 +21,14 @@ COPY --from=builder /app/web /home/app/web
 COPY --from=builder /app /usr/local/share/mz5-source
 RUN cd /usr/local/share/mz5-source && go mod download
 
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 RUN mkdir -p /data/repos && chown -R app:app /data
 RUN chown -R app:app /home/app /usr/local/share/mz5-source
 
-USER app
 WORKDIR /home/app
 ENV WASM_DIR=/home/app/web
 EXPOSE 8080
+ENTRYPOINT ["entrypoint.sh"]
 CMD ["server"]

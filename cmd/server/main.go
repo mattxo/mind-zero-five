@@ -75,7 +75,7 @@ func main() {
 	if os.Getenv("MIND_ENABLED") == "true" {
 		repoDir := os.Getenv("MIND_REPO_DIR")
 		if repoDir == "" {
-			repoDir = "/usr/local/share/mz5-source"
+			repoDir = "/data/source"
 		}
 		m := mind.New(bus, tasks, auth, mindActor.ID, repoDir)
 		go m.Run(ctx)

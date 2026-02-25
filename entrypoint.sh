@@ -1,0 +1,69 @@
+#!/bin/bash
+set -e
+
+SOURCE_IMAGE="/usr/local/share/mz5-source"
+SOURCE_DATA="/data/source"
+CLAUDE_DATA="/data/.claude"
+SSH_DATA="/data/.ssh"
+
+# --- Setup symlinks for ALL users that might run Claude Code ---
+# The server runs as 'app' but Claude Code runs as root.
+setup_user_symlinks() {
+    local user_home="$1"
+    local user_name="$2"
+
+    echo "entrypoint: setting up symlinks for $user_name (home=$user_home)"
+
+    # Claude Code data
+    if [ -d "$user_home/.claude" ] && [ ! -L "$user_home/.claude" ]; then
+        echo "entrypoint: merging $user_name ephemeral .claude into persistent volume"
+        cp -an "$user_home/.claude/." "$CLAUDE_DATA/" 2>/dev/null || true
+        rm -rf "$user_home/.claude"
+    fi
+    ln -sfn "$CLAUDE_DATA" "$user_home/.claude"
+
+    # SSH keys
+    if [ -d "$SSH_DATA" ]; then
+        if [ -d "$user_home/.ssh" ] && [ ! -L "$user_home/.ssh" ]; then
+            rm -rf "$user_home/.ssh"
+        fi
+        ln -sfn "$SSH_DATA" "$user_home/.ssh"
+    fi
+}
+
+# --- Source code persistence ---
+if [ ! -d "$SOURCE_DATA/.git" ]; then
+    echo "entrypoint: first boot — copying source to persistent volume"
+    cp -a "$SOURCE_IMAGE" "$SOURCE_DATA"
+fi
+git config --global --add safe.directory "$SOURCE_DATA"
+
+# --- Ensure persistent dirs exist ---
+mkdir -p "$CLAUDE_DATA"
+mkdir -p "$SSH_DATA"
+
+# --- Symlinks for root (Claude Code runs as root) ---
+setup_user_symlinks "/root" "root"
+
+# --- Symlinks for app user (server runs as app) ---
+setup_user_symlinks "/home/app" "app"
+
+# --- Project-level .claude persistence ---
+PROJECT_CLAUDE="$SOURCE_DATA/.claude"
+CLAUDE_PROJECT_DATA="/data/.claude-project"
+if [ ! -d "$CLAUDE_PROJECT_DATA" ]; then
+    if [ -d "$PROJECT_CLAUDE" ] && [ ! -L "$PROJECT_CLAUDE" ]; then
+        mv "$PROJECT_CLAUDE" "$CLAUDE_PROJECT_DATA"
+    else
+        mkdir -p "$CLAUDE_PROJECT_DATA"
+    fi
+fi
+if [ -d "$PROJECT_CLAUDE" ] && [ ! -L "$PROJECT_CLAUDE" ]; then
+    rm -rf "$PROJECT_CLAUDE"
+fi
+ln -sfn "$CLAUDE_PROJECT_DATA" "$PROJECT_CLAUDE"
+
+echo "entrypoint: source=$SOURCE_DATA, claude=$CLAUDE_DATA, ssh=$SSH_DATA"
+echo "entrypoint: starting server as app"
+
+exec su-exec app "$@"
