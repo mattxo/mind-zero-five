@@ -103,16 +103,123 @@ func (m *Mind) onTaskCreated(ctx context.Context, e *eventgraph.Event) {
 		"subject": t.Subject,
 	}, []string{e.ID})
 
+	// Subtasks (have a parent) execute directly — no planning phase
+	if t.ParentID != "" {
+		m.executeSubtask(ctx, t, claimEvent)
+		return
+	}
+
 	m.executeTask(ctx, t, claimEvent)
 }
 
+// executeTask orchestrates the full plan → implement → review → finish cycle.
 func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventgraph.Event) {
 	causes := []string{}
 	if causeEvent != nil {
 		causes = []string{causeEvent.ID}
 	}
 
-	// Build prompt from task
+	// Record the starting commit so we can diff later
+	startCommit, err := getCurrentCommit(ctx, m.repoDir)
+	if err != nil {
+		log.Printf("mind: get start commit: %v", err)
+		startCommit = "HEAD~20" // fallback: review last 20 commits
+	}
+
+	// --- PLAN ---
+	m.logEvent(ctx, "mind.plan.started", map[string]any{
+		"task_id": t.ID,
+		"subject": t.Subject,
+	}, causes)
+
+	subtaskSpecs, err := m.Plan(ctx, t)
+	if err != nil {
+		log.Printf("mind: plan failed for task %s: %v", t.ID, err)
+		// Fall back to direct execution (single-shot, like before)
+		m.logEvent(ctx, "mind.plan.failed", map[string]any{
+			"task_id": t.ID,
+			"error":   err.Error(),
+		}, causes)
+		m.executeDirectly(ctx, t, causes)
+		return
+	}
+
+	planEvent, _ := m.logEvent(ctx, "mind.plan.completed", map[string]any{
+		"task_id":       t.ID,
+		"subtask_count": len(subtaskSpecs),
+	}, causes)
+
+	planCauses := causes
+	if planEvent != nil {
+		planCauses = []string{planEvent.ID}
+	}
+
+	// Create subtasks in the task store
+	subtaskIDs, err := m.createSubtasks(ctx, t.ID, subtaskSpecs, planCauses)
+	if err != nil {
+		log.Printf("mind: create subtasks for task %s: %v", t.ID, err)
+		m.markBlocked(ctx, t.ID, "failed to create subtasks: "+err.Error(), planCauses)
+		return
+	}
+
+	// --- IMPLEMENT ---
+	blocked := m.implementSubtasks(ctx, t.ID, subtaskIDs, planCauses)
+	if blocked {
+		return // parent already marked blocked by implementSubtasks
+	}
+
+	// --- REVIEW (max 2 rounds) ---
+	reviewCauses := planCauses
+	for round := 0; round < 2; round++ {
+		m.logEvent(ctx, "mind.review.started", map[string]any{
+			"task_id": t.ID,
+			"round":   round + 1,
+		}, reviewCauses)
+
+		issues, err := m.Review(ctx, t, startCommit)
+		if err != nil {
+			log.Printf("mind: review failed for task %s: %v", t.ID, err)
+			m.logEvent(ctx, "mind.review.failed", map[string]any{
+				"task_id": t.ID,
+				"error":   err.Error(),
+			}, reviewCauses)
+			break // proceed to finish — review failure shouldn't block
+		}
+
+		reviewEvent, _ := m.logEvent(ctx, "mind.review.completed", map[string]any{
+			"task_id":     t.ID,
+			"round":       round + 1,
+			"issue_count": len(issues),
+			"clean":       len(issues) == 0,
+		}, reviewCauses)
+
+		if len(issues) == 0 {
+			break // clean review
+		}
+
+		if reviewEvent != nil {
+			reviewCauses = []string{reviewEvent.ID}
+		}
+
+		// Create fix subtasks from review issues
+		fixIDs, err := m.createSubtasks(ctx, t.ID, issues, reviewCauses)
+		if err != nil {
+			log.Printf("mind: create fix subtasks: %v", err)
+			break
+		}
+
+		blocked = m.implementSubtasks(ctx, t.ID, fixIDs, reviewCauses)
+		if blocked {
+			return
+		}
+	}
+
+	// --- FINISH ---
+	m.finishTask(ctx, t, reviewCauses)
+}
+
+// executeDirectly is the fallback single-shot execution (used when planning fails).
+func (m *Mind) executeDirectly(ctx context.Context, t *task.Task, causes []string) {
 	prompt := fmt.Sprintf("You are working in %s. Complete this task:\n\nSubject: %s\n", m.repoDir, t.Subject)
 	if t.Description != "" {
 		prompt += fmt.Sprintf("\nDescription: %s\n", t.Description)
@@ -123,6 +230,7 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 	invokeEvent, _ := m.logEvent(ctx, "mind.claude.invoked", map[string]any{
 		"task_id": t.ID,
 		"prompt":  truncate(prompt, 500),
+		"mode":    "direct",
 	}, causes)
 
 	invokeCauses := causes
@@ -130,10 +238,8 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 		invokeCauses = []string{invokeEvent.ID}
 	}
 
-	// Invoke Claude
-	result, err := InvokeClaude(ctx, m.repoDir, prompt)
+	result, err := InvokeClaude(ctx, m.repoDir, prompt, "")
 	if err != nil {
-		log.Printf("mind: claude invocation failed for task %s: %v", t.ID, err)
 		m.logEvent(ctx, "mind.claude.failed", map[string]any{
 			"task_id": t.ID,
 			"error":   err.Error(),
@@ -147,7 +253,6 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 		"exit_code": result.ExitCode,
 		"duration":  result.Duration.String(),
 		"result":    truncate(result.Result, 1000),
-		"stderr":    truncate(result.Stderr, 500),
 	}, invokeCauses)
 
 	completedCauses := invokeCauses
@@ -156,15 +261,94 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 	}
 
 	if result.ExitCode != 0 {
-		// Retry once with error context
-		retryPrompt := fmt.Sprintf("The previous attempt to complete this task failed (exit code %d).\n\nOriginal task: %s\n\nOutput:\n%s\n\nPlease fix the issues and verify with: go build ./... && go test ./...",
+		m.markBlocked(ctx, t.ID, fmt.Sprintf("claude failed (exit %d)", result.ExitCode), completedCauses)
+		return
+	}
+
+	if err := BuildAndTest(ctx, m.repoDir); err != nil {
+		m.logEvent(ctx, "build.failed", map[string]any{
+			"task_id": t.ID,
+			"error":   truncate(err.Error(), 1000),
+		}, completedCauses)
+		m.markBlocked(ctx, t.ID, "build/test failed: "+truncate(err.Error(), 200), completedCauses)
+		return
+	}
+
+	m.finishTask(ctx, t, completedCauses)
+}
+
+// executeSubtask handles a single focused subtask (already claimed).
+func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eventgraph.Event) {
+	causes := []string{}
+	if causeEvent != nil {
+		causes = []string{causeEvent.ID}
+	}
+
+	m.logEvent(ctx, "mind.subtask.started", map[string]any{
+		"task_id":   t.ID,
+		"parent_id": t.ParentID,
+		"subject":   t.Subject,
+	}, causes)
+
+	// Determine model from metadata
+	model := ""
+	if t.Metadata != nil {
+		if m, ok := t.Metadata["model"].(string); ok {
+			model = m
+		}
+	}
+
+	prompt := fmt.Sprintf("You are working in %s. Complete this specific subtask:\n\nSubject: %s\n", m.repoDir, t.Subject)
+	if t.Description != "" {
+		prompt += fmt.Sprintf("\nDescription: %s\n", t.Description)
+	}
+	prompt += "\nThis is a focused change — make ONLY the changes described above.\n"
+	prompt += "After making changes, verify with: go build ./... && go test ./...\n"
+	prompt += "Do NOT commit — just make the code changes and verify they build.\n"
+
+	invokeEvent, _ := m.logEvent(ctx, "mind.claude.invoked", map[string]any{
+		"task_id": t.ID,
+		"model":   model,
+		"prompt":  truncate(prompt, 500),
+	}, causes)
+
+	invokeCauses := causes
+	if invokeEvent != nil {
+		invokeCauses = []string{invokeEvent.ID}
+	}
+
+	result, err := InvokeClaude(ctx, m.repoDir, prompt, model)
+	if err != nil {
+		m.logEvent(ctx, "mind.claude.failed", map[string]any{
+			"task_id": t.ID,
+			"error":   err.Error(),
+		}, invokeCauses)
+		m.markBlocked(ctx, t.ID, "claude failed: "+err.Error(), invokeCauses)
+		return
+	}
+
+	completedEvent, _ := m.logEvent(ctx, "mind.claude.completed", map[string]any{
+		"task_id":   t.ID,
+		"exit_code": result.ExitCode,
+		"duration":  result.Duration.String(),
+		"result":    truncate(result.Result, 1000),
+	}, invokeCauses)
+
+	completedCauses := invokeCauses
+	if completedEvent != nil {
+		completedCauses = []string{completedEvent.ID}
+	}
+
+	if result.ExitCode != 0 {
+		// Retry once
+		retryPrompt := fmt.Sprintf("The previous attempt failed (exit code %d).\n\nOriginal task: %s\n\nOutput:\n%s\n\nPlease fix and verify with: go build ./... && go test ./...",
 			result.ExitCode, t.Subject, truncate(result.Result, 2000))
 
 		m.logEvent(ctx, "mind.claude.retry", map[string]any{
 			"task_id": t.ID,
 		}, completedCauses)
 
-		result, err = InvokeClaude(ctx, m.repoDir, retryPrompt)
+		result, err = InvokeClaude(ctx, m.repoDir, retryPrompt, model)
 		if err != nil || result.ExitCode != 0 {
 			errMsg := "retry failed"
 			if err != nil {
@@ -177,7 +361,6 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 
 	// Build and test
 	if err := BuildAndTest(ctx, m.repoDir); err != nil {
-		log.Printf("mind: build/test failed for task %s: %v", t.ID, err)
 		m.logEvent(ctx, "build.failed", map[string]any{
 			"task_id": t.ID,
 			"error":   truncate(err.Error(), 1000),
@@ -186,25 +369,108 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 		return
 	}
 
-	buildEvent, _ := m.logEvent(ctx, "build.passed", map[string]any{
-		"task_id": t.ID,
-	}, completedCauses)
-
-	buildCauses := completedCauses
-	if buildEvent != nil {
-		buildCauses = []string{buildEvent.ID}
-	}
-
-	// Git commit and push
+	// Incremental commit for this subtask
 	commitMsg := fmt.Sprintf("mind: %s", t.Subject)
 	if err := GitCommitAndPush(ctx, m.repoDir, commitMsg); err != nil {
-		// Not fatal — may have nothing to commit
-		log.Printf("mind: git commit/push for task %s: %v", t.ID, err)
+		log.Printf("mind: git commit for subtask %s: %v", t.ID, err)
 	} else {
 		m.logEvent(ctx, "code.committed", map[string]any{
 			"task_id": t.ID,
 			"message": commitMsg,
-		}, buildCauses)
+		}, completedCauses)
+	}
+
+	// Complete the subtask
+	if _, err := m.tasks.Complete(ctx, t.ID); err != nil {
+		log.Printf("mind: complete subtask %s: %v", t.ID, err)
+	}
+
+	m.logEvent(ctx, "mind.subtask.completed", map[string]any{
+		"task_id":   t.ID,
+		"parent_id": t.ParentID,
+		"subject":   t.Subject,
+	}, completedCauses)
+}
+
+// createSubtasks creates subtask records in the task store.
+func (m *Mind) createSubtasks(ctx context.Context, parentID string, specs []SubtaskSpec, causes []string) ([]string, error) {
+	var ids []string
+	for _, spec := range specs {
+		st := &task.Task{
+			Subject:     spec.Subject,
+			Description: spec.Description,
+			Source:      "mind",
+			ParentID:    parentID,
+			Metadata: map[string]any{
+				"model": spec.Model,
+			},
+		}
+		created, err := m.tasks.Create(ctx, st)
+		if err != nil {
+			return nil, fmt.Errorf("create subtask %q: %w", spec.Subject, err)
+		}
+		ids = append(ids, created.ID)
+		log.Printf("mind: created subtask %s (%s) [%s]", created.ID, spec.Subject, spec.Model)
+	}
+	return ids, nil
+}
+
+// implementSubtasks executes subtasks sequentially. Returns true if any subtask blocked.
+func (m *Mind) implementSubtasks(ctx context.Context, parentID string, subtaskIDs []string, causes []string) bool {
+	for _, stID := range subtaskIDs {
+		st, err := m.tasks.Get(ctx, stID)
+		if err != nil {
+			log.Printf("mind: get subtask %s: %v", stID, err)
+			m.markBlocked(ctx, parentID, fmt.Sprintf("get subtask %s: %v", stID, err), causes)
+			return true
+		}
+
+		// Subtask might already be completed (if re-running after a review round)
+		if st.Status == "completed" {
+			continue
+		}
+
+		// Claim the subtask
+		st, err = m.tasks.Update(ctx, stID, map[string]any{
+			"status":   "in_progress",
+			"assignee": "mind",
+		})
+		if err != nil {
+			log.Printf("mind: claim subtask %s: %v", stID, err)
+			continue
+		}
+
+		claimEvent, _ := m.logEvent(ctx, "task.claimed", map[string]any{
+			"task_id": stID,
+			"subject": st.Subject,
+		}, causes)
+
+		m.executeSubtask(ctx, st, claimEvent)
+
+		// Check if subtask got blocked
+		st, err = m.tasks.Get(ctx, stID)
+		if err != nil {
+			continue
+		}
+		if st.Status == "blocked" {
+			m.markBlocked(ctx, parentID, fmt.Sprintf("subtask %s blocked: %s", stID, st.Subject), causes)
+			return true
+		}
+	}
+	return false
+}
+
+// finishTask handles the completion flow: push, complete, build binary, request restart.
+func (m *Mind) finishTask(ctx context.Context, t *task.Task, causes []string) {
+	// Final push (in case subtask commits haven't been pushed yet)
+	commitMsg := fmt.Sprintf("mind: %s", t.Subject)
+	if err := GitCommitAndPush(ctx, m.repoDir, commitMsg); err != nil {
+		log.Printf("mind: final commit/push for task %s: %v", t.ID, err)
+	} else {
+		m.logEvent(ctx, "code.committed", map[string]any{
+			"task_id": t.ID,
+			"message": commitMsg,
+		}, causes)
 	}
 
 	// Complete the task
@@ -214,7 +480,7 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 	m.logEvent(ctx, "task.completed", map[string]any{
 		"task_id": t.ID,
 		"subject": t.Subject,
-	}, buildCauses)
+	}, causes)
 
 	// Build deployment binaries
 	if err := Build(ctx, m.repoDir); err != nil {
@@ -222,15 +488,15 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 		m.logEvent(ctx, "build.deploy.failed", map[string]any{
 			"task_id": t.ID,
 			"error":   truncate(err.Error(), 500),
-		}, buildCauses)
+		}, causes)
 		return
 	}
 
 	deployEvent, _ := m.logEvent(ctx, "build.completed", map[string]any{
 		"task_id": t.ID,
-	}, buildCauses)
+	}, causes)
 
-	deployCauses := buildCauses
+	deployCauses := causes
 	if deployEvent != nil {
 		deployCauses = []string{deployEvent.ID}
 	}

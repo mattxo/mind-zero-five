@@ -20,10 +20,15 @@ type ClaudeResult struct {
 }
 
 // InvokeClaude runs the Claude Code CLI with the given prompt and returns the result.
-func InvokeClaude(ctx context.Context, workDir, prompt string) (*ClaudeResult, error) {
+// If model is non-empty, it is passed as --model to the CLI (e.g. "opus", "sonnet", "haiku").
+func InvokeClaude(ctx context.Context, workDir, prompt, model string) (*ClaudeResult, error) {
 	start := time.Now()
 
-	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--output-format", "json")
+	args := []string{"-p", prompt, "--output-format", "json"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = workDir
 	// Clean environment: remove vars that interfere with Claude CLI auth.
 	// CLAUDECODE triggers nested-session detection.
