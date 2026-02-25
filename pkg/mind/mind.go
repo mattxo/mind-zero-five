@@ -145,6 +145,7 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 		"exit_code": result.ExitCode,
 		"duration":  result.Duration.String(),
 		"result":    truncate(result.Result, 1000),
+		"stderr":    truncate(result.Stderr, 500),
 	}, invokeCauses)
 
 	completedCauses := invokeCauses
