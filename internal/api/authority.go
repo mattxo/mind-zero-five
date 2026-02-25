@@ -42,6 +42,12 @@ func (s *Server) handleAuthorityResolve(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 500, err.Error())
 		return
 	}
+	// Emit authority.resolved event so the mind can react
+	s.events.Append(r.Context(), "authority.resolved", "api", map[string]any{
+		"authority_id": req.ID,
+		"action":       req.Action,
+		"approved":     approved,
+	}, nil, "")
 	writeJSON(w, 200, req)
 }
 

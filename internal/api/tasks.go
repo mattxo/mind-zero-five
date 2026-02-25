@@ -46,6 +46,12 @@ func (s *Server) handleTaskCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
+	// Emit task.created event so the mind can pick it up
+	s.events.Append(r.Context(), "task.created", "api", map[string]any{
+		"task_id": result.ID,
+		"subject": result.Subject,
+		"source":  result.Source,
+	}, nil, "")
 	writeJSON(w, 201, result)
 }
 
