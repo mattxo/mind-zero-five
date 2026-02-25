@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 
 	"mind-zero-five/pkg/authority"
 	"mind-zero-five/pkg/eventgraph"
@@ -66,8 +65,6 @@ func (m *Mind) handle(ctx context.Context, e *eventgraph.Event) {
 	switch e.Type {
 	case "task.created":
 		m.onTaskCreated(ctx, e)
-	case "authority.resolved":
-		m.onAuthorityResolved(ctx, e)
 	}
 }
 
@@ -224,43 +221,27 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 		return
 	}
 
-	m.logEvent(ctx, "build.completed", map[string]any{
+	deployEvent, _ := m.logEvent(ctx, "build.completed", map[string]any{
 		"task_id": t.ID,
 	}, buildCauses)
 
-	// Request authority to restart
-	req, err := m.auth.Create(ctx, "restart", fmt.Sprintf("Task completed: %s. New binaries built. Ready to restart.", t.Subject), "mind", authority.Required)
-	if err != nil {
-		log.Printf("mind: request restart authority: %v", err)
-		return
-	}
-	m.logEvent(ctx, "authority.requested", map[string]any{
-		"task_id":      t.ID,
-		"authority_id": req.ID,
-		"action":       "restart",
-	}, buildCauses)
-}
-
-func (m *Mind) onAuthorityResolved(ctx context.Context, e *eventgraph.Event) {
-	authID, _ := e.Content["authority_id"].(string)
-	approved, _ := e.Content["approved"].(bool)
-	action, _ := e.Content["action"].(string)
-
-	if !approved || !strings.Contains(action, "restart") {
-		return
+	deployCauses := buildCauses
+	if deployEvent != nil {
+		deployCauses = []string{deployEvent.ID}
 	}
 
-	log.Printf("mind: restart approved (authority %s), deploying", authID)
+	// Auto-restart: replace the running process with the new binary
+	log.Printf("mind: restarting with new binary after task %s", t.ID)
 	m.logEvent(ctx, "deploy.started", map[string]any{
-		"authority_id": authID,
-	}, []string{e.ID})
+		"task_id": t.ID,
+	}, deployCauses)
 
 	if err := RestartSelf(); err != nil {
 		log.Printf("mind: restart failed: %v", err)
 		m.logEvent(ctx, "deploy.failed", map[string]any{
-			"authority_id": authID,
-			"error":        err.Error(),
-		}, []string{e.ID})
+			"task_id": t.ID,
+			"error":   err.Error(),
+		}, deployCauses)
 	}
 }
 
