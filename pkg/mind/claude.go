@@ -25,12 +25,15 @@ func InvokeClaude(ctx context.Context, workDir, prompt string) (*ClaudeResult, e
 
 	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--output-format", "json")
 	cmd.Dir = workDir
-	// Clean environment: remove CLAUDECODE to avoid nested-session detection,
-	// and ensure the subprocess inherits necessary env vars.
+	// Clean environment: remove vars that interfere with Claude CLI auth.
+	// CLAUDECODE triggers nested-session detection.
+	// ANTHROPIC_API_KEY overrides OAuth credentials if set incorrectly.
+	// The CLI will use OAuth creds from ~/.claude/.credentials.json.
 	for _, env := range os.Environ() {
-		if !strings.HasPrefix(env, "CLAUDECODE=") {
-			cmd.Env = append(cmd.Env, env)
+		if strings.HasPrefix(env, "CLAUDECODE=") || strings.HasPrefix(env, "ANTHROPIC_API_KEY=") {
+			continue
 		}
+		cmd.Env = append(cmd.Env, env)
 	}
 
 	var stdout, stderr bytes.Buffer
