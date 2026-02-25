@@ -1,6 +1,6 @@
-# Binaries
-server
-eg
+# Binaries (root-level only, not cmd/ subdirs)
+/server
+/eg
 *.exe
 *.wasm
 
