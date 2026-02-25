@@ -6,6 +6,8 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o server ./cmd/server
 RUN CGO_ENABLED=0 go build -o eg ./cmd/eg
+RUN GOOS=js GOARCH=wasm go build -o web/ui.wasm ./cmd/ui
+RUN cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/wasm_exec.js
 
 FROM golang:1.24-alpine
 RUN apk add --no-cache ca-certificates nodejs npm git openssh-client bash
