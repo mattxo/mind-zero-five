@@ -66,6 +66,37 @@ Levels:
 - `recommended` — auto-approves after 15 minutes if no response
 - `notification` — auto-approves immediately, just logged
 
+## Persistence — READ THIS FIRST
+
+This runs on a Fly machine. The container filesystem is **ephemeral** — it is destroyed on every restart, deploy, or scale event. The ONLY thing that survives is the persistent volume at `/data` and the Postgres database.
+
+**NEVER put anything permanent on the ephemeral filesystem.** This includes:
+- Source code
+- SSH keys
+- Config files
+- Claude Code session history
+- Credentials
+- Anything you want to exist after a restart
+
+**ALWAYS use `/data/` for persistent state:**
+- Source code: `/data/source`
+- SSH keys: `/data/.ssh` (symlink `~/.ssh` → `/data/.ssh`)
+- Claude Code state: `/data/.claude` (symlink `~/.claude` → `/data/.claude`)
+
+If you generate keys, write configs, clone repos, or create any file that matters — it goes on `/data`. No exceptions.
+
+## Git
+
+**ALWAYS push after committing.** Commits that aren't pushed don't survive restarts.
+
+```bash
+git add <files>
+git commit -m "message"
+git push origin main
+```
+
+Remote: `git@github.com:mattxo/mind-zero-five.git` (SSH)
+
 ## Building
 
 ```bash
@@ -106,7 +137,7 @@ All prior repos are available for reference:
 ## Principles
 
 1. Say what you'll do, do what you say
-2. Commit after each completed task
+2. Commit AND PUSH after each completed task
 3. No silent failures — log everything to the eventgraph
 4. Build on solid foundations
 5. Intelligence is the default
