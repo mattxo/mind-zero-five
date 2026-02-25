@@ -1,0 +1,21 @@
+# Binaries
+server
+eg
+*.exe
+*.wasm
+
+# Build
+/cmd/ui/wasm_exec.js
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

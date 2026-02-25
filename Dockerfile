@@ -1,0 +1,29 @@
+FROM golang:1.24-alpine AS builder
+RUN apk add --no-cache ca-certificates git
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o server ./cmd/server
+RUN CGO_ENABLED=0 go build -o eg ./cmd/eg
+
+FROM golang:1.24-alpine
+RUN apk add --no-cache ca-certificates nodejs npm git openssh-client bash
+RUN npm install -g @anthropic-ai/claude-code
+
+RUN adduser -D -h /home/app app
+
+COPY --from=builder /app/server /usr/local/bin/server
+COPY --from=builder /app/eg /usr/local/bin/eg
+COPY --from=builder /app/web /home/app/web
+COPY --from=builder /app /usr/local/share/mz5-source
+RUN cd /usr/local/share/mz5-source && go mod download
+
+RUN mkdir -p /data/repos && chown -R app:app /data
+RUN chown -R app:app /home/app /usr/local/share/mz5-source
+
+USER app
+WORKDIR /home/app
+ENV WASM_DIR=/home/app/web
+EXPOSE 8080
+CMD ["server"]

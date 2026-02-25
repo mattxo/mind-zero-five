@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mind-zero-five</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #121212;
+    color: #e0e0e0;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  #giowindow {
+    width: 100%;
+    height: 100%;
+  }
+  .fallback {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    gap: 16px;
+  }
+  .fallback h1 { margin: 0; font-size: 24px; }
+  .fallback p { margin: 0; color: #888; }
+  .fallback a { color: #6090c0; }
+</style>
+</head>
+<body>
+<div id="giowindow">
+  <div class="fallback" id="fallback">
+    <h1>mind-zero-five</h1>
+    <p>Loading WASM UI...</p>
+    <noscript><p>JavaScript is required.</p></noscript>
+  </div>
+</div>
+<script src="wasm_exec.js"></script>
+<script>
+  if (!WebAssembly.instantiateStreaming) {
+    WebAssembly.instantiateStreaming = async (resp, importObject) => {
+      const source = await (await resp).arrayBuffer();
+      return await WebAssembly.instantiate(source, importObject);
+    };
+  }
+  const go = new Go();
+  WebAssembly.instantiateStreaming(fetch("ui.wasm"), go.importObject)
+    .then(result => {
+      document.getElementById("fallback").style.display = "none";
+      go.run(result.instance);
+    })
+    .catch(err => {
+      document.getElementById("fallback").innerHTML =
+        '<h1>mind-zero-five</h1><p>WASM load failed: ' + err.message + '</p>' +
+        '<p>API is still available at <a href="/api/status">/api/status</a></p>';
+    });
+</script>
+</body>
+</html>
