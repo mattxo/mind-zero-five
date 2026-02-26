@@ -209,6 +209,30 @@ func (m *Mind) diagTaskHealth(ctx context.Context, sb *strings.Builder) {
 				}
 			}
 		}
+
+		// Check for abandoned tasks (blocked, retries exhausted)
+		if status == "blocked" {
+			for _, t := range tasks {
+				retryCount := 0
+				if t.Metadata != nil {
+					switch v := t.Metadata["retry_count"].(type) {
+					case float64:
+						retryCount = int(v)
+					case int:
+						retryCount = v
+					}
+				}
+				if retryCount >= 3 {
+					reason := ""
+					if t.Metadata != nil {
+						if r, ok := t.Metadata["blocked_reason"].(string); ok {
+							reason = r
+						}
+					}
+					sb.WriteString(fmt.Sprintf("  - **ABANDONED**: %q (retries exhausted, reason: %s)\n", t.Subject, reason))
+				}
+			}
+		}
 	}
 
 	sb.WriteString("\n")
@@ -277,6 +301,9 @@ func parseAssessment(response string) *Proposal {
 
 	matches := improveTagRe.FindStringSubmatch(response)
 	if matches == nil {
+		// Assessment produced output that wasn't [OK] and didn't match [IMPROVE:...].
+		// Log so diagnostics can detect assessment parsing failures.
+		log.Printf("mind: assessment output unparseable (len=%d): %s", len(response), truncate(response, 200))
 		return nil
 	}
 

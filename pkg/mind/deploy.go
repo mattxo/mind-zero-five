@@ -5,6 +5,8 @@ package mind
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -81,10 +83,45 @@ func BuildAndTest(ctx context.Context, repoDir string) error {
 	return nil
 }
 
-// RestartSelf replaces the running mind process with the new mind binary.
+// RestartSelf backs up the current binary, then replaces the running mind
+// process with the new mind binary. The watchdog can restore the backup
+// if the new binary crashes.
 func RestartSelf() error {
 	binary := "/usr/local/bin/mind"
+	backup := "/usr/local/bin/mind.bak"
+
+	// Backup current binary before replacing ourselves
+	if err := copyFile(binary, backup); err != nil {
+		log.Printf("mind: backup binary before restart: %v (continuing anyway)", err)
+	}
+
 	args := []string{"mind"}
 	env := os.Environ()
 	return syscall.Exec(binary, args, env)
+}
+
+// writeHeartbeat touches the heartbeat file so the watchdog knows we're alive.
+func writeHeartbeat() {
+	f, err := os.Create("/tmp/mind-heartbeat")
+	if err != nil {
+		return
+	}
+	f.Close()
+}
+
+func copyFile(src, dst string) error {
+	s, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	d, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	_, err = io.Copy(d, s)
+	return err
 }

@@ -115,6 +115,9 @@ func (m *Mind) poll(ctx context.Context) {
 		}
 	}()
 
+	// Heartbeat — watchdog checks this file to know we're alive
+	writeHeartbeat()
+
 	// Priority order: restart > proposal > tasks > assess
 	if m.pendingRestart != "" {
 		m.checkRestart(ctx)

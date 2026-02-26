@@ -105,5 +105,14 @@ echo "entrypoint: starting mind process in background"
 MIND_PID=$!
 echo "entrypoint: mind started (pid=$MIND_PID)"
 
+# --- Start watchdog ---
+# External process monitor. Does NOT depend on Go, Claude, or Postgres.
+# Restarts mind if it dies, kills it if stuck, reverts if crash-looping.
+if [ -f "$SOURCE_DATA/watchdog.sh" ]; then
+    echo "entrypoint: starting watchdog"
+    /bin/sh "$SOURCE_DATA/watchdog.sh" &
+    echo "entrypoint: watchdog started (pid=$!)"
+fi
+
 echo "entrypoint: starting server as app"
 exec su-exec app "$@"
