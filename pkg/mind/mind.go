@@ -557,6 +557,10 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 	commitMsg := fmt.Sprintf("mind: %s", t.Subject)
 	if err := GitCommitAndPush(ctx, m.repoDir, commitMsg); err != nil {
 		log.Printf("mind: git commit for subtask %s: %v", t.ID, err)
+		m.logEvent(ctx, "git.commit_push.failed", map[string]any{
+			"task_id": t.ID,
+			"error":   truncate(err.Error(), 500),
+		}, completedCauses)
 	} else {
 		m.logEvent(ctx, "code.committed", map[string]any{
 			"task_id": t.ID,
@@ -650,6 +654,10 @@ func (m *Mind) finishTask(ctx context.Context, t *task.Task, causes []string) {
 	commitMsg := fmt.Sprintf("mind: %s", t.Subject)
 	if err := GitCommitAndPush(ctx, m.repoDir, commitMsg); err != nil {
 		log.Printf("mind: final commit/push for task %s: %v", t.ID, err)
+		m.logEvent(ctx, "git.commit_push.failed", map[string]any{
+			"task_id": t.ID,
+			"error":   truncate(err.Error(), 500),
+		}, causes)
 	} else {
 		m.logEvent(ctx, "code.committed", map[string]any{
 			"task_id": t.ID,

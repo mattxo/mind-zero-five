@@ -33,7 +33,7 @@ func GitCommitAndPush(ctx context.Context, repoDir, message string) error {
 	}{
 		{"git", []string{"add", "-A"}},
 		{"git", []string{"commit", "-m", message}},
-		{"git", []string{"push"}},
+		{"git", []string{"push", "origin", "main"}},
 	}
 	for _, c := range cmds {
 		cmd := exec.CommandContext(ctx, c.name, c.args...)
