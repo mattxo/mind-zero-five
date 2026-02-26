@@ -44,13 +44,48 @@ func New(events eventgraph.EventStore, tasks task.Store, auth authority.Store, a
 		auth:           auth,
 		actorID:        actorID,
 		repoDir:        repoDir,
-		assessInterval: 30 * time.Minute,
+		assessInterval: 5 * time.Minute,
+	}
+}
+
+// recoverState rehydrates in-memory state from pending authority requests on startup.
+// This ensures that if the mind restarts while waiting for approval, it resumes correctly.
+func (m *Mind) recoverState(ctx context.Context) {
+	pending, err := m.auth.Pending(ctx)
+	if err != nil {
+		log.Printf("mind: recoverState: list pending authority: %v", err)
+		return
+	}
+
+	var recoveredIDs []string
+	for _, req := range pending {
+		if req.Source != "mind" {
+			continue
+		}
+		switch req.Action {
+		case "restart":
+			m.pendingRestart = req.ID
+			recoveredIDs = append(recoveredIDs, req.ID)
+			log.Printf("mind: recovered pendingRestart=%s", req.ID)
+		case "self-improve":
+			m.pendingProposal = req.ID
+			recoveredIDs = append(recoveredIDs, req.ID)
+			log.Printf("mind: recovered pendingProposal=%s", req.ID)
+		}
+	}
+
+	if len(recoveredIDs) > 0 {
+		m.logEvent(ctx, "mind.state.recovered", map[string]any{
+			"recovered_ids": recoveredIDs,
+		}, nil)
 	}
 }
 
 // Run polls for pending tasks and resolved authority requests until ctx is cancelled.
 func (m *Mind) Run(ctx context.Context) {
 	log.Println("mind: running, polling for tasks")
+
+	m.recoverState(ctx)
 
 	// Catch up immediately on startup
 	m.poll(ctx)
