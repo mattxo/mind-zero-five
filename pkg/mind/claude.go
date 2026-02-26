@@ -24,7 +24,7 @@ type ClaudeResult struct {
 func InvokeClaude(ctx context.Context, workDir, prompt, model string) (*ClaudeResult, error) {
 	start := time.Now()
 
-	args := []string{"-p", prompt, "--output-format", "json", "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash"}
+	args := []string{"-p", prompt, "--output-format", "json", "--allowedTools", "Edit Write Read Glob Grep Bash"}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
