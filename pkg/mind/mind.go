@@ -86,6 +86,8 @@ func (m *Mind) poll(ctx context.Context) {
 		return
 	}
 
+	m.retryBlockedTasks(ctx)
+
 	if m.checkPendingTasks(ctx) {
 		return // found and started a task
 	}
