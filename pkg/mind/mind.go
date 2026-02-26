@@ -735,8 +735,21 @@ func (m *Mind) doRestart(ctx context.Context, authID string, causes []string) {
 }
 
 func (m *Mind) markBlocked(ctx context.Context, taskID, reason string, causes []string) {
+	// Read existing metadata to preserve retry_count and other fields.
+	meta := map[string]any{}
+	if t, err := m.tasks.Get(ctx, taskID); err == nil && t.Metadata != nil {
+		for k, v := range t.Metadata {
+			meta[k] = v
+		}
+	}
+	meta["blocked_reason"] = reason
+	if _, exists := meta["retry_count"]; !exists {
+		meta["retry_count"] = 0
+	}
+
 	if _, err := m.tasks.Update(ctx, taskID, map[string]any{
-		"status": "blocked",
+		"status":   "blocked",
+		"metadata": meta,
 	}); err != nil {
 		log.Printf("mind: mark task %s blocked: %v", taskID, err)
 	}
