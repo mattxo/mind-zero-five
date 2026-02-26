@@ -24,6 +24,9 @@ type ClaudeResult struct {
 func InvokeClaude(ctx context.Context, workDir, prompt, model string) (*ClaudeResult, error) {
 	start := time.Now()
 
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
 	args := []string{"-p", prompt, "--output-format", "json", "--allowedTools", "Edit Write Read Glob Grep Bash"}
 	if model != "" {
 		args = append(args, "--model", model)
@@ -61,6 +64,13 @@ func InvokeClaude(ctx context.Context, workDir, prompt, model string) (*ClaudeRe
 
 	exitCode := 0
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return &ClaudeResult{
+				Stderr:   "claude invocation timed out after 10 minutes",
+				Duration: duration,
+				ExitCode: -1,
+			}, nil
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
