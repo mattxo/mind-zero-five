@@ -22,7 +22,7 @@ COPY --from=builder /app /usr/local/share/mz5-source
 RUN cd /usr/local/share/mz5-source && go mod download
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
 RUN mkdir -p /data/repos && chown -R app:app /data
 RUN chown -R app:app /home/app /usr/local/share/mz5-source
@@ -30,5 +30,5 @@ RUN chown -R app:app /home/app /usr/local/share/mz5-source
 WORKDIR /home/app
 ENV WASM_DIR=/home/app/web
 EXPOSE 8080
-ENTRYPOINT ["entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["server"]
