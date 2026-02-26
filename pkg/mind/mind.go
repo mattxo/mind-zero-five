@@ -759,6 +759,77 @@ func (m *Mind) markBlocked(ctx context.Context, taskID, reason string, causes []
 	}, causes)
 }
 
+// retryBlockedTasks finds blocked tasks assigned to the mind that are older than
+// 15 minutes and have been retried fewer than 3 times, then requeues them as
+// pending. Returns true if any tasks were retried.
+func (m *Mind) retryBlockedTasks(ctx context.Context) bool {
+	tasks, err := m.tasks.List(ctx, "blocked", 20)
+	if err != nil {
+		log.Printf("mind: list blocked tasks: %v", err)
+		return false
+	}
+
+	retried := false
+	cutoff := time.Now().Add(-15 * time.Minute)
+
+	for i := range tasks {
+		t := &tasks[i]
+		if t.Assignee != "mind" {
+			continue
+		}
+		if t.UpdatedAt.After(cutoff) {
+			continue // updated too recently
+		}
+
+		// Read retry_count from metadata (default 0)
+		retryCount := 0
+		if t.Metadata != nil {
+			switch v := t.Metadata["retry_count"].(type) {
+			case int:
+				retryCount = v
+			case float64:
+				retryCount = int(v)
+			}
+		}
+		if retryCount >= 3 {
+			continue
+		}
+
+		// Build updated metadata, preserving existing fields
+		meta := map[string]any{}
+		if t.Metadata != nil {
+			for k, v := range t.Metadata {
+				meta[k] = v
+			}
+		}
+		// Copy blocked_reason to prev_failure_reason before clearing
+		if br, ok := meta["blocked_reason"].(string); ok && br != "" {
+			meta["prev_failure_reason"] = br
+		}
+		meta["retry_count"] = retryCount + 1
+
+		if _, err := m.tasks.Update(ctx, t.ID, map[string]any{
+			"status":   "pending",
+			"assignee": "",
+			"metadata": meta,
+		}); err != nil {
+			log.Printf("mind: retry task %s: %v", t.ID, err)
+			continue
+		}
+
+		m.logEvent(ctx, "task.retried", map[string]any{
+			"task_id":     t.ID,
+			"subject":     t.Subject,
+			"retry_count": retryCount + 1,
+		}, nil)
+
+		log.Printf("mind: retried task %s (retry %d): %s", t.ID, retryCount+1, t.Subject)
+		retried = true
+	}
+
+	return retried
+}
+
 func (m *Mind) logEvent(ctx context.Context, eventType string, content map[string]any, causes []string) (*eventgraph.Event, error) {
 	e, err := m.events.Append(ctx, eventType, "mind", content, causes, "")
 	if err != nil {
