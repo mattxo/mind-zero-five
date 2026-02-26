@@ -161,6 +161,16 @@ func (s *mockAuthStore) MatchPolicy(_ context.Context, action string) (*authorit
 func (s *mockAuthStore) ListPolicies(_ context.Context) ([]authority.Policy, error) { return nil, nil }
 func (s *mockAuthStore) EnsureTable(_ context.Context) error                        { return nil }
 
+// mockAuthStoreWithPending extends mockAuthStore with a configurable Pending list.
+type mockAuthStoreWithPending struct {
+	mockAuthStore
+	pending []authority.Request
+}
+
+func (s *mockAuthStoreWithPending) Pending(_ context.Context) ([]authority.Request, error) {
+	return s.pending, nil
+}
+
 // --- Helpers ---
 
 func newTestMind(ts task.Store) *Mind {
@@ -326,5 +336,57 @@ func TestRetryBlockedTasksTooRecent(t *testing.T) {
 	stored := ts.tasks["t5"]
 	if stored.Status != "blocked" {
 		t.Errorf("status: want blocked (unchanged), got %q", stored.Status)
+	}
+}
+
+// TestRecoverStateSetsFields verifies that recoverState rehydrates pendingRestart
+// and pendingProposal from pending authority requests where source=mind.
+func TestRecoverStateSetsFields(t *testing.T) {
+	auth := &mockAuthStoreWithPending{
+		pending: []authority.Request{
+			{ID: "auth-restart-1", Action: "restart", Source: "mind", Status: "pending"},
+			{ID: "auth-improve-1", Action: "self-improve", Source: "mind", Status: "pending"},
+		},
+	}
+	m := New(&mockEventStore{}, newMockTaskStore(), auth, "mind", "/tmp")
+
+	m.recoverState(context.Background())
+
+	if m.pendingRestart != "auth-restart-1" {
+		t.Errorf("pendingRestart: want %q, got %q", "auth-restart-1", m.pendingRestart)
+	}
+	if m.pendingProposal != "auth-improve-1" {
+		t.Errorf("pendingProposal: want %q, got %q", "auth-improve-1", m.pendingProposal)
+	}
+}
+
+// TestRecoverStateNoMatch verifies that recoverState is a no-op when there are
+// no pending authority requests with source=mind.
+func TestRecoverStateNoMatch(t *testing.T) {
+	// No pending requests at all.
+	auth := &mockAuthStoreWithPending{pending: nil}
+	m := New(&mockEventStore{}, newMockTaskStore(), auth, "mind", "/tmp")
+
+	m.recoverState(context.Background())
+
+	if m.pendingRestart != "" {
+		t.Errorf("pendingRestart: want empty, got %q", m.pendingRestart)
+	}
+	if m.pendingProposal != "" {
+		t.Errorf("pendingProposal: want empty, got %q", m.pendingProposal)
+	}
+
+	// Also verify that requests from a different source are ignored.
+	auth2 := &mockAuthStoreWithPending{
+		pending: []authority.Request{
+			{ID: "auth-other", Action: "restart", Source: "human", Status: "pending"},
+		},
+	}
+	m2 := New(&mockEventStore{}, newMockTaskStore(), auth2, "mind", "/tmp")
+
+	m2.recoverState(context.Background())
+
+	if m2.pendingRestart != "" {
+		t.Errorf("pendingRestart (non-mind source): want empty, got %q", m2.pendingRestart)
 	}
 }
