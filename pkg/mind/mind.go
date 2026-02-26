@@ -784,15 +784,11 @@ func (m *Mind) retryBlockedTasks(ctx context.Context) bool {
 	}
 
 	retried := false
-	cutoff := time.Now().Add(-15 * time.Minute)
 
 	for i := range tasks {
 		t := &tasks[i]
 		if t.Assignee != "mind" {
 			continue
-		}
-		if t.UpdatedAt.After(cutoff) {
-			continue // updated too recently
 		}
 
 		// Read retry_count from metadata (default 0)
@@ -807,6 +803,12 @@ func (m *Mind) retryBlockedTasks(ctx context.Context) bool {
 		}
 		if retryCount >= 3 {
 			continue
+		}
+
+		// Exponential backoff: retry 0 waits 15m, retry 1 waits 30m, retry 2 waits 60m.
+		cutoff := time.Now().Add(-15 * time.Minute * time.Duration(1<<retryCount))
+		if t.UpdatedAt.After(cutoff) {
+			continue // updated too recently
 		}
 
 		// Build updated metadata, preserving existing fields
