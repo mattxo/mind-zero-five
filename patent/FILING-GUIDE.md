@@ -30,14 +30,16 @@ Use the TM Headstart / eServices portal, or file via the Patents Form system.
 - **The specification document** — upload `provisional-specification.md` as a PDF (convert first)
 - **Applicant details:**
   - Name: Matthew Searles
+  - ABN: 86 932 245 930 (Individual/Sole Trader, active from 03 Feb 2026)
   - Address: [your address]
+  - Location: NSW 2260
   - Country: Australia
 - **Inventor:** Matthew Searles (same as applicant)
 - **Title of Invention:** Autonomous Cognitive Agent System with Hash-Chained Causal Event Graph and Primitive Communication Protocol
 
 ### Step 3: Fee
 
-**$240 AUD** for online filing (as of 2025 fee schedule — verify current fee).
+**$100 AUD** for online filing, **$200 AUD** by post (as of 2026 fee schedule).
 
 ### Step 4: What Happens Next
 
