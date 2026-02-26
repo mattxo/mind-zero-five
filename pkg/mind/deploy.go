@@ -36,6 +36,7 @@ func Build(ctx context.Context, repoDir string) error {
 		pkg    string
 	}{
 		{"/usr/local/bin/server", "./cmd/server"},
+		{"/usr/local/bin/mind", "./cmd/mind"},
 		{"/usr/local/bin/eg", "./cmd/eg"},
 	}
 	for _, t := range targets {
@@ -65,10 +66,10 @@ func BuildAndTest(ctx context.Context, repoDir string) error {
 	return nil
 }
 
-// RestartSelf replaces the running process with the new server binary.
+// RestartSelf replaces the running mind process with the new mind binary.
 func RestartSelf() error {
-	binary := "/usr/local/bin/server"
-	args := os.Args
+	binary := "/usr/local/bin/mind"
+	args := []string{"mind"}
 	env := os.Environ()
 	return syscall.Exec(binary, args, env)
 }

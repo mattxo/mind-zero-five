@@ -96,6 +96,14 @@ if ! grep -q '/data/bin' /etc/profile 2>/dev/null; then
 fi
 
 echo "entrypoint: source=$SOURCE_DATA, claude=$CLAUDE_DATA, ssh=$SSH_DATA"
-echo "entrypoint: starting server as app"
 
+# --- Start mind process in background ---
+# Mind runs as root (needs Claude CLI, git, go build, syscall.Exec).
+# It restarts itself independently via syscall.Exec without affecting the server.
+echo "entrypoint: starting mind process in background"
+/usr/local/bin/mind &
+MIND_PID=$!
+echo "entrypoint: mind started (pid=$MIND_PID)"
+
+echo "entrypoint: starting server as app"
 exec su-exec app "$@"

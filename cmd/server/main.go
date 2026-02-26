@@ -13,7 +13,6 @@ import (
 	"mind-zero-five/pkg/actor"
 	"mind-zero-five/pkg/authority"
 	"mind-zero-five/pkg/eventgraph"
-	"mind-zero-five/pkg/mind"
 	"mind-zero-five/pkg/task"
 )
 
@@ -70,17 +69,6 @@ func main() {
 
 	// API server uses Bus (satisfies EventStore interface) so events flow through it
 	server := api.New(bus, tasks, auth)
-
-	// Start mind if enabled
-	if os.Getenv("MIND_ENABLED") == "true" {
-		repoDir := os.Getenv("MIND_REPO_DIR")
-		if repoDir == "" {
-			repoDir = "/data/source"
-		}
-		m := mind.New(bus, tasks, auth, mindActor.ID, repoDir)
-		go m.Run(ctx)
-		log.Println("mind: enabled")
-	}
 
 	// Signal handling for graceful shutdown
 	go func() {

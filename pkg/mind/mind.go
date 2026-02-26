@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
+	"time"
 
 	"mind-zero-five/pkg/authority"
 	"mind-zero-five/pkg/eventgraph"
@@ -14,17 +14,21 @@ import (
 // Mind is the autonomous event-driven loop that picks up tasks,
 // invokes Claude Code CLI, builds, commits, and deploys.
 type Mind struct {
-	bus     *eventgraph.Bus
+	events  eventgraph.EventStore
 	tasks   task.Store
 	auth    authority.Store
 	actorID string // this mind's actor ID, for policy matching
 	repoDir string
+
+	// pendingRestart holds the authority request ID when waiting for
+	// human approval of a restart. Empty when not waiting.
+	pendingRestart string
 }
 
 // New creates a Mind.
-func New(bus *eventgraph.Bus, tasks task.Store, auth authority.Store, actorID, repoDir string) *Mind {
+func New(events eventgraph.EventStore, tasks task.Store, auth authority.Store, actorID, repoDir string) *Mind {
 	return &Mind{
-		bus:     bus,
+		events:  events,
 		tasks:   tasks,
 		auth:    auth,
 		actorID: actorID,
@@ -32,84 +36,109 @@ func New(bus *eventgraph.Bus, tasks task.Store, auth authority.Store, actorID, r
 	}
 }
 
-// Run subscribes to the event bus and reacts to events until ctx is cancelled.
+// Run polls for pending tasks and resolved authority requests until ctx is cancelled.
 func (m *Mind) Run(ctx context.Context) {
-	ch := m.bus.Subscribe()
-	defer m.bus.Unsubscribe(ch)
+	log.Println("mind: running, polling for tasks")
 
-	log.Println("mind: running, subscribed to event bus")
+	// Catch up immediately on startup
+	m.poll(ctx)
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			log.Println("mind: shutting down")
 			return
-		case e, ok := <-ch:
-			if !ok {
-				return
-			}
-			m.handle(ctx, e)
+		case <-ticker.C:
+			m.poll(ctx)
 		}
 	}
 }
 
-func (m *Mind) handle(ctx context.Context, e *eventgraph.Event) {
+// poll checks for work to do: pending tasks or resolved authority requests.
+func (m *Mind) poll(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("mind: panic handling event %s (%s): %v", e.ID, e.Type, r)
+			log.Printf("mind: panic in poll: %v", r)
 			m.logEvent(ctx, "mind.panic", map[string]any{
-				"event_id":   e.ID,
-				"event_type": e.Type,
-				"error":      fmt.Sprintf("%v", r),
-			}, []string{e.ID})
+				"error": fmt.Sprintf("%v", r),
+			}, nil)
 		}
 	}()
 
-	switch e.Type {
-	case "task.created":
-		m.onTaskCreated(ctx, e)
-	case "authority.resolved":
-		m.onAuthorityResolved(ctx, e)
+	// If waiting for restart approval, check that first
+	if m.pendingRestart != "" {
+		m.checkRestart(ctx)
+		return
+	}
+
+	m.checkPendingTasks(ctx)
+}
+
+// checkPendingTasks looks for pending tasks and claims the first one.
+func (m *Mind) checkPendingTasks(ctx context.Context) {
+	tasks, err := m.tasks.List(ctx, "pending", 10)
+	if err != nil {
+		log.Printf("mind: poll pending tasks: %v", err)
+		return
+	}
+
+	for i := range tasks {
+		t := &tasks[i]
+		// Skip tasks already assigned to someone else
+		if t.Assignee != "" && t.Assignee != "mind" {
+			continue
+		}
+
+		// Claim and execute
+		t, err = m.tasks.Update(ctx, t.ID, map[string]any{
+			"status":   "in_progress",
+			"assignee": "mind",
+		})
+		if err != nil {
+			log.Printf("mind: claim task %s: %v", tasks[i].ID, err)
+			continue
+		}
+
+		claimEvent, _ := m.logEvent(ctx, "task.claimed", map[string]any{
+			"task_id": t.ID,
+			"subject": t.Subject,
+		}, nil)
+
+		// Subtasks (have a parent) execute directly — no planning phase
+		if t.ParentID != "" {
+			m.executeSubtask(ctx, t, claimEvent)
+		} else {
+			m.executeTask(ctx, t, claimEvent)
+		}
+
+		// Process one task per poll cycle
+		return
 	}
 }
 
-func (m *Mind) onTaskCreated(ctx context.Context, e *eventgraph.Event) {
-	taskID, _ := e.Content["task_id"].(string)
-	if taskID == "" {
-		return
-	}
-
-	t, err := m.tasks.Get(ctx, taskID)
+// checkRestart polls for resolution of a pending restart authority request.
+func (m *Mind) checkRestart(ctx context.Context) {
+	req, err := m.auth.Get(ctx, m.pendingRestart)
 	if err != nil {
-		log.Printf("mind: get task %s: %v", taskID, err)
-		return
-	}
-	if t.Status != "pending" {
-		return
-	}
-
-	// Claim the task
-	t, err = m.tasks.Update(ctx, taskID, map[string]any{
-		"status":   "in_progress",
-		"assignee": "mind",
-	})
-	if err != nil {
-		log.Printf("mind: claim task %s: %v", taskID, err)
+		log.Printf("mind: check restart authority %s: %v", m.pendingRestart, err)
+		m.pendingRestart = ""
 		return
 	}
 
-	claimEvent, _ := m.logEvent(ctx, "task.claimed", map[string]any{
-		"task_id": taskID,
-		"subject": t.Subject,
-	}, []string{e.ID})
-
-	// Subtasks (have a parent) execute directly — no planning phase
-	if t.ParentID != "" {
-		m.executeSubtask(ctx, t, claimEvent)
-		return
+	if req.Status == "pending" {
+		return // still waiting
 	}
 
-	m.executeTask(ctx, t, claimEvent)
+	if req.Status == "approved" {
+		log.Printf("mind: restart approved (authority %s), deploying", req.ID)
+		m.doRestart(ctx, req.ID, nil)
+	} else {
+		log.Printf("mind: restart rejected (authority %s)", req.ID)
+	}
+	m.pendingRestart = ""
 }
 
 // executeTask orchestrates the full plan → implement → review → finish cycle.
@@ -529,6 +558,7 @@ func (m *Mind) requestRestart(ctx context.Context, t *task.Task, causes []string
 	policy, err := m.auth.MatchPolicy(ctx, "restart")
 	if err != nil {
 		log.Printf("mind: no policy for restart, leaving pending for human: %v", err)
+		m.pendingRestart = req.ID
 		return
 	}
 
@@ -547,21 +577,11 @@ func (m *Mind) requestRestart(ctx context.Context, t *task.Task, causes []string
 		}, reqCauses)
 
 		m.doRestart(ctx, req.ID, reqCauses)
-	}
-	// Otherwise: leave pending, wait for authority.resolved event from human
-}
-
-func (m *Mind) onAuthorityResolved(ctx context.Context, e *eventgraph.Event) {
-	authID, _ := e.Content["authority_id"].(string)
-	approved, _ := e.Content["approved"].(bool)
-	action, _ := e.Content["action"].(string)
-
-	if !approved || !strings.Contains(action, "restart") {
 		return
 	}
 
-	log.Printf("mind: restart approved (authority %s), deploying", authID)
-	m.doRestart(ctx, authID, []string{e.ID})
+	// Otherwise: leave pending, poll will check for resolution
+	m.pendingRestart = req.ID
 }
 
 func (m *Mind) doRestart(ctx context.Context, authID string, causes []string) {
@@ -591,7 +611,7 @@ func (m *Mind) markBlocked(ctx context.Context, taskID, reason string, causes []
 }
 
 func (m *Mind) logEvent(ctx context.Context, eventType string, content map[string]any, causes []string) (*eventgraph.Event, error) {
-	e, err := m.bus.Append(ctx, eventType, "mind", content, causes, "")
+	e, err := m.events.Append(ctx, eventType, "mind", content, causes, "")
 	if err != nil {
 		log.Printf("mind: log event %s: %v", eventType, err)
 	}

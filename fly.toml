@@ -5,7 +5,6 @@ primary_region = 'syd'
 
 [env]
   PORT = '8080'
-  MIND_ENABLED = 'true'
   MIND_REPO_DIR = '/data/source'
 
 [http_service]
