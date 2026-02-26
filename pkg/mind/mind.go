@@ -2,6 +2,7 @@ package mind
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -11,8 +12,8 @@ import (
 	"mind-zero-five/pkg/task"
 )
 
-// Mind is the autonomous event-driven loop that picks up tasks,
-// invokes Claude Code CLI, builds, commits, and deploys.
+// Mind is the autonomous loop that picks up tasks, invokes Claude Code CLI,
+// builds, commits, deploys, and — when idle — assesses itself for improvements.
 type Mind struct {
 	events  eventgraph.EventStore
 	tasks   task.Store
@@ -23,16 +24,22 @@ type Mind struct {
 	// pendingRestart holds the authority request ID when waiting for
 	// human approval of a restart. Empty when not waiting.
 	pendingRestart string
+
+	// Self-improvement state
+	pendingProposal string    // authority request ID for current improvement proposal
+	lastAssessment  time.Time // when the last assessment ran
+	assessInterval  time.Duration
 }
 
 // New creates a Mind.
 func New(events eventgraph.EventStore, tasks task.Store, auth authority.Store, actorID, repoDir string) *Mind {
 	return &Mind{
-		events:  events,
-		tasks:   tasks,
-		auth:    auth,
-		actorID: actorID,
-		repoDir: repoDir,
+		events:         events,
+		tasks:          tasks,
+		auth:           auth,
+		actorID:        actorID,
+		repoDir:        repoDir,
+		assessInterval: 30 * time.Minute,
 	}
 }
 
@@ -68,21 +75,32 @@ func (m *Mind) poll(ctx context.Context) {
 		}
 	}()
 
-	// If waiting for restart approval, check that first
+	// Priority order: restart > proposal > tasks > assess
 	if m.pendingRestart != "" {
 		m.checkRestart(ctx)
 		return
 	}
 
-	m.checkPendingTasks(ctx)
+	if m.pendingProposal != "" {
+		m.checkProposal(ctx)
+		return
+	}
+
+	if m.checkPendingTasks(ctx) {
+		return // found and started a task
+	}
+
+	// Idle — maybe assess for improvements
+	m.maybeAssess(ctx)
 }
 
 // checkPendingTasks looks for pending tasks and claims the first one.
-func (m *Mind) checkPendingTasks(ctx context.Context) {
+// Returns true if a task was found and executed.
+func (m *Mind) checkPendingTasks(ctx context.Context) bool {
 	tasks, err := m.tasks.List(ctx, "pending", 10)
 	if err != nil {
 		log.Printf("mind: poll pending tasks: %v", err)
-		return
+		return false
 	}
 
 	for i := range tasks {
@@ -115,8 +133,9 @@ func (m *Mind) checkPendingTasks(ctx context.Context) {
 		}
 
 		// Process one task per poll cycle
-		return
+		return true
 	}
+	return false
 }
 
 // checkRestart polls for resolution of a pending restart authority request.
@@ -139,6 +158,123 @@ func (m *Mind) checkRestart(ctx context.Context) {
 		log.Printf("mind: restart rejected (authority %s)", req.ID)
 	}
 	m.pendingRestart = ""
+}
+
+// maybeAssess runs a self-assessment if enough time has passed since the last one.
+func (m *Mind) maybeAssess(ctx context.Context) {
+	if time.Since(m.lastAssessment) < m.assessInterval {
+		return
+	}
+
+	m.lastAssessment = time.Now()
+	log.Println("mind: idle — running self-assessment")
+
+	assessEvent, _ := m.logEvent(ctx, "mind.assess.started", map[string]any{}, nil)
+
+	causes := []string{}
+	if assessEvent != nil {
+		causes = []string{assessEvent.ID}
+	}
+
+	proposal, err := m.Assess(ctx)
+	if err != nil {
+		log.Printf("mind: assessment failed: %v", err)
+		m.logEvent(ctx, "mind.assess.failed", map[string]any{
+			"error": err.Error(),
+		}, causes)
+		return
+	}
+
+	if proposal == nil {
+		log.Println("mind: assessment found no improvements needed")
+		m.logEvent(ctx, "mind.assess.completed", map[string]any{
+			"result": "ok",
+		}, causes)
+		return
+	}
+
+	log.Printf("mind: proposing improvement: %s", proposal.Subject)
+	m.logEvent(ctx, "mind.assess.completed", map[string]any{
+		"result":  "proposal",
+		"subject": proposal.Subject,
+	}, causes)
+
+	// Encode proposal as JSON in the authority request description
+	proposalJSON, _ := json.Marshal(proposal)
+	req, err := m.auth.Create(ctx, "self-improve",
+		string(proposalJSON),
+		"mind", authority.Required)
+	if err != nil {
+		log.Printf("mind: create self-improve authority: %v", err)
+		return
+	}
+
+	m.logEvent(ctx, "authority.requested", map[string]any{
+		"authority_id": req.ID,
+		"action":       "self-improve",
+		"subject":      proposal.Subject,
+	}, causes)
+
+	m.pendingProposal = req.ID
+	log.Printf("mind: improvement proposal submitted for approval (authority %s): %s", req.ID, proposal.Subject)
+}
+
+// checkProposal polls for resolution of a pending self-improvement authority request.
+func (m *Mind) checkProposal(ctx context.Context) {
+	req, err := m.auth.Get(ctx, m.pendingProposal)
+	if err != nil {
+		log.Printf("mind: check proposal authority %s: %v", m.pendingProposal, err)
+		m.pendingProposal = ""
+		return
+	}
+
+	if req.Status == "pending" {
+		return // still waiting for Matt
+	}
+
+	if req.Status == "approved" {
+		log.Printf("mind: improvement approved (authority %s)", req.ID)
+
+		// Parse proposal from description
+		var proposal Proposal
+		if err := json.Unmarshal([]byte(req.Description), &proposal); err != nil {
+			log.Printf("mind: parse proposal from authority %s: %v", req.ID, err)
+			m.pendingProposal = ""
+			return
+		}
+
+		// Create the task
+		t, err := m.tasks.Create(ctx, &task.Task{
+			Subject:     proposal.Subject,
+			Description: proposal.Description,
+			Source:      "mind",
+			Metadata: map[string]any{
+				"model":        proposal.Model,
+				"self_improve": true,
+				"authority_id": req.ID,
+			},
+		})
+		if err != nil {
+			log.Printf("mind: create improvement task: %v", err)
+			m.pendingProposal = ""
+			return
+		}
+
+		m.logEvent(ctx, "self-improve.task.created", map[string]any{
+			"task_id":      t.ID,
+			"authority_id": req.ID,
+			"subject":      proposal.Subject,
+		}, nil)
+
+		log.Printf("mind: created improvement task %s: %s", t.ID, proposal.Subject)
+	} else {
+		log.Printf("mind: improvement rejected (authority %s)", req.ID)
+		m.logEvent(ctx, "self-improve.rejected", map[string]any{
+			"authority_id": req.ID,
+		}, nil)
+	}
+
+	m.pendingProposal = ""
 }
 
 // executeTask orchestrates the full plan → implement → review → finish cycle.

@@ -97,13 +97,36 @@ git push origin main
 
 Remote: `git@github.com:mattxo/mind-zero-five.git` (SSH)
 
+## Architecture
+
+Two binaries on the same Fly machine, same `/data` volume, same Postgres:
+
+- **`cmd/server`** — HTTP API, WASM UI, SSE. Runs as `app` user. Foreground process (Fly health checks).
+- **`cmd/mind`** — Autonomous loop. Polls Postgres every 5s for pending tasks. Runs as `root`. Background process. Can `syscall.Exec` itself to restart without affecting the server.
+- **`cmd/eg`** — CLI tool for eventgraph, tasks, authority.
+
+The mind invokes Claude Code CLI to do its work. Each invocation reads this CLAUDE.md automatically.
+
 ## Building
 
 ```bash
-go build ./... && go test ./...
+go build ./cmd/server ./cmd/mind ./cmd/eg && go test ./...
 ```
 
-Always verify the build before marking work complete.
+Note: `cmd/ui` is WASM-only — exclude from native builds. Always verify the build before marking work complete.
+
+## Deploying
+
+We are ON the Fly VM. Deploy = build in-place and restart:
+
+```bash
+# Build and install binaries
+go build -o /usr/local/bin/server ./cmd/server
+go build -o /usr/local/bin/mind ./cmd/mind
+go build -o /usr/local/bin/eg ./cmd/eg
+```
+
+No flyctl needed. The mind restarts itself via `syscall.Exec` after building. The server only restarts on full machine reboot.
 
 ## The Ontology
 
