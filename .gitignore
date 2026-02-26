@@ -1,6 +1,7 @@
 # Binaries (root-level only, not cmd/ subdirs)
 /server
 /eg
+/mind
 *.exe
 *.wasm
 
