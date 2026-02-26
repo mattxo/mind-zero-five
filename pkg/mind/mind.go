@@ -1,3 +1,8 @@
+// Package mind implements the autonomous mind loop that:
+// - Polls Postgres for pending tasks every 5 seconds
+// - Invokes Claude Code CLI to execute tasks (with plan, implement, review, finish cycle)
+// - Handles self-assessment when idle to propose improvements
+// - Manages retry and exponential backoff for blocked tasks
 package mind
 
 import (
