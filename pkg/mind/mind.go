@@ -394,6 +394,12 @@ func (m *Mind) executeDirectly(ctx context.Context, t *task.Task, causes []strin
 	prompt += "\nAfter making changes, verify with: go build ./... && go test ./...\n"
 	prompt += "Do NOT commit — just make the code changes and verify they build.\n"
 
+	if t.Metadata != nil {
+		if reason, ok := t.Metadata["prev_failure_reason"].(string); ok && reason != "" {
+			prompt = "IMPORTANT — Previous attempt failed with: " + reason + ". Avoid repeating this mistake.\n\n" + prompt
+		}
+	}
+
 	invokeEvent, _ := m.logEvent(ctx, "mind.claude.invoked", map[string]any{
 		"task_id": t.ID,
 		"prompt":  truncate(prompt, 500),
@@ -472,6 +478,12 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 	prompt += "\nThis is a focused change — make ONLY the changes described above.\n"
 	prompt += "After making changes, verify with: go build ./... && go test ./...\n"
 	prompt += "Do NOT commit — just make the code changes and verify they build.\n"
+
+	if t.Metadata != nil {
+		if reason, ok := t.Metadata["prev_failure_reason"].(string); ok && reason != "" {
+			prompt = "IMPORTANT — Previous attempt failed with: " + reason + ". Avoid repeating this mistake.\n\n" + prompt
+		}
+	}
 
 	invokeEvent, _ := m.logEvent(ctx, "mind.claude.invoked", map[string]any{
 		"task_id": t.ID,
