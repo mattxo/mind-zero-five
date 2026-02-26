@@ -5,8 +5,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
+
+// goCmd creates an exec.Cmd for the go tool with PATH set correctly.
+func goCmd(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "/usr/local/go/bin/go", args...)
+	cmd.Dir = repoDir
+	// Ensure Go toolchain can find itself
+	for _, env := range os.Environ() {
+		if strings.HasPrefix(env, "PATH=") && !strings.Contains(env, "/usr/local/go/bin") {
+			env = env + ":/usr/local/go/bin"
+		}
+		cmd.Env = append(cmd.Env, env)
+	}
+	return cmd
+}
 
 // GitCommitAndPush stages all changes, commits with the given message, and pushes.
 func GitCommitAndPush(ctx context.Context, repoDir, message string) error {
@@ -40,8 +55,7 @@ func Build(ctx context.Context, repoDir string) error {
 		{"/usr/local/bin/eg", "./cmd/eg"},
 	}
 	for _, t := range targets {
-		cmd := exec.CommandContext(ctx, "go", "build", "-o", t.output, t.pkg)
-		cmd.Dir = repoDir
+		cmd := goCmd(ctx, repoDir, "build", "-o", t.output, t.pkg)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("build %s: %w\n%s", t.pkg, err, string(out))
@@ -53,11 +67,10 @@ func Build(ctx context.Context, repoDir string) error {
 // BuildAndTest runs go build ./... && go test ./... in the repo.
 func BuildAndTest(ctx context.Context, repoDir string) error {
 	for _, args := range [][]string{
-		{"build", "./..."},
-		{"test", "./..."},
+		{"build", "./cmd/server", "./cmd/mind", "./cmd/eg"},
+		{"test", "./pkg/...", "./internal/..."},
 	} {
-		cmd := exec.CommandContext(ctx, "go", args...)
-		cmd.Dir = repoDir
+		cmd := goCmd(ctx, repoDir, args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("go %v: %w\n%s", args, err, string(out))

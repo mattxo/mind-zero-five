@@ -24,7 +24,7 @@ type ClaudeResult struct {
 func InvokeClaude(ctx context.Context, workDir, prompt, model string) (*ClaudeResult, error) {
 	start := time.Now()
 
-	args := []string{"-p", prompt, "--output-format", "json"}
+	args := []string{"-p", prompt, "--output-format", "json", "--allowedTools", "Edit,Write,Read,Glob,Grep,Bash"}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
@@ -34,11 +34,22 @@ func InvokeClaude(ctx context.Context, workDir, prompt, model string) (*ClaudeRe
 	// CLAUDECODE triggers nested-session detection.
 	// ANTHROPIC_API_KEY overrides OAuth credentials if set incorrectly.
 	// The CLI will use OAuth creds from ~/.claude/.credentials.json.
+	// Ensure Go is in PATH for build/test commands.
+	hasPath := false
 	for _, env := range os.Environ() {
 		if strings.HasPrefix(env, "CLAUDECODE=") || strings.HasPrefix(env, "ANTHROPIC_API_KEY=") {
 			continue
 		}
+		if strings.HasPrefix(env, "PATH=") {
+			if !strings.Contains(env, "/usr/local/go/bin") {
+				env = env + ":/usr/local/go/bin"
+			}
+			hasPath = true
+		}
 		cmd.Env = append(cmd.Env, env)
+	}
+	if !hasPath {
+		cmd.Env = append(cmd.Env, "PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin")
 	}
 
 	var stdout, stderr bytes.Buffer
