@@ -1,5 +1,7 @@
 package mind
 
+// deploy provides git, build, and process restart helpers for the mind loop.
+
 import (
 	"context"
 	"fmt"
