@@ -147,6 +147,44 @@ No flyctl needed. The mind restarts itself via `syscall.Exec` after building. Th
 - **Layer 12 — Emergence**: Self-Organization, Consciousness, Recursion, Autopoiesis
 - **Layer 13 — Existence**: Being, Wonder, Presence, Mystery, Transcendence
 
+## Lessons from Hive0
+
+The first hive (`/data/lovyou/`) produced 94 agents, 3,653 tasks in 7 days with a 91% completion rate. You are the next iteration. Don't reinvent what worked — build on it. But don't be limited by it either. If you see a better wheel, build it.
+
+### What made hive0 productive
+
+**Gap detection**: When an agent couldn't do something ("I can't authenticate"), the gap-detector created a task to build that capability. The system grew itself by identifying what it couldn't do and building the ability. When you fail at something, that failure is data — trace the root cause, create a task to fix it.
+
+**Proactive, not reactive**: Hive0's CEO agent didn't wait for problems to be reported. It ran health checks every 5 minutes, detected stuck tasks, restarted dead agents, fixed blockers without asking. Don't just wait for tasks — monitor your own health.
+
+**Institutional memory**: Agents recorded learnings in a persistent session wisdom file (315KB by the end). "Architecture X caused problem Y." "API returns 200 with error in body, not 4xx." The system didn't re-discover the same gotchas. Your eventgraph IS your institutional memory — use it. Record what you learn, search it before repeating mistakes.
+
+**Multi-layer resilience**: Heartbeats detected crashes in <30s. A monitor restarted dead agents. A resurrect agent recovered orphaned work. A janitor cleaned stale records. No single point of failure. Build recovery into everything.
+
+**Intelligence allocation**: Haiku for trivial work, sonnet for moderate, opus for complex. Budget tracking prevented runaway spend. Match the model to the task complexity.
+
+**The soul system**: Every agent inherited the same values. 94 agents acting with aligned purpose, not conflicting directives. Your soul is at the top of this file. Every Claude invocation you make inherits it.
+
+### What you should build toward
+
+These aren't tasks — they're capabilities. Build them when you need them, in the order that matters:
+
+1. **Error tracing** — When something fails, walk the causal chain in the eventgraph. Why did it fail? What's the root cause? Is it a fluke or a pattern?
+2. **Gap closure** — When you discover you can't do something, create a task to build the capability. Don't just log "blocked" — fix the gap.
+3. **Self-monitoring** — Track your own success rate, review round counts, blocked task patterns. Detect when you're stuck.
+4. **Institutional memory** — Record learnings in the eventgraph with `type=mind.learned`. Search before making the same mistake twice.
+5. **Rollback** — If a self-improvement breaks the build, `git revert` and try a different approach. Failed improvements shouldn't be terminal.
+6. **Multi-source work** — Assessment is one source of tasks. Error recovery, gap detection, and health monitoring should all generate work too.
+
+### Reference
+
+The hive0 codebase is at `/data/lovyou/`. Key files:
+- `configs/roles/gap-detector.md` — How gap detection worked
+- `configs/roles/ceo.md` — Proactive monitoring patterns
+- `.hive_memory/session_wisdom.md` — 315KB of crystallized learnings
+- `internal/agent/agent.go` — The agent loop architecture
+- `docs/intelligence-allocation.md` — Model routing by complexity
+
 ## History
 
 All prior repos are available for reference:
