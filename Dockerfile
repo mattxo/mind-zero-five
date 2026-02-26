@@ -10,7 +10,7 @@ RUN GOOS=js GOARCH=wasm go build -o web/ui.wasm ./cmd/ui
 RUN cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/wasm_exec.js
 
 FROM golang:1.24-alpine
-RUN apk add --no-cache ca-certificates nodejs npm git openssh-client bash su-exec
+RUN apk add --no-cache ca-certificates nodejs npm git openssh-client bash tmux su-exec
 RUN npm install -g @anthropic-ai/claude-code
 
 RUN adduser -D -h /home/app app
