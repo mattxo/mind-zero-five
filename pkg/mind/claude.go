@@ -17,6 +17,7 @@ type ClaudeResult struct {
 	Stderr   string        `json:"stderr,omitempty"`
 	Duration time.Duration `json:"duration"`
 	ExitCode int           `json:"exit_code"`
+	Timeout  bool          `json:"timeout,omitempty"`
 }
 
 // InvokeClaude runs the Claude Code CLI with the given prompt and returns the result.
@@ -69,7 +70,8 @@ func InvokeClaude(ctx context.Context, workDir, prompt, model string) (*ClaudeRe
 				Stderr:   "claude invocation timed out after 10 minutes",
 				Duration: duration,
 				ExitCode: -1,
-			}, nil
+				Timeout:  true,
+			}, fmt.Errorf("claude invocation timed out after 10 minutes")
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
