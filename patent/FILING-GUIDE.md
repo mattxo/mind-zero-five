@@ -6,10 +6,13 @@
 
 **File:** `provisional-specification.md` in this directory
 
-This single provisional covers three inventions:
-1. The autonomous agent system (eventgraph + primitives + tick engine + decision trees + authority)
-2. The primitive communication protocol (four-event vocabulary + listen/say + gateway routing + three-layer knowledge)
-3. The layer ontology derivation method (gap-driven derivation + convergence validation)
+This single provisional covers four inventions (20 claims):
+1. The autonomous agent system (eventgraph + primitives + tick engine + decision trees + authority) — claims 1-7
+2. The intra-system communication protocol (four-event vocabulary + listen/say + gateway routing + three-layer knowledge) — claims 8-10
+3. The inter-system communication protocol / EGIP (cross-graph causal references + signed envelopes + integrity proofs + treaties + trust accumulation) — claims 11-16
+4. The layer ontology derivation method (gap-driven derivation + convergence validation) — claims 17-20
+
+Protocol design document: `protocol-design.md` in this directory
 
 You can split these into separate complete (standard) applications when you file within the 12-month priority window.
 
@@ -63,9 +66,10 @@ Use the TM Headstart / eServices portal, or file via the Patents Form system.
 
 ### Splitting Strategy
 When filing complete applications, consider:
-- **Application A:** System patent (eventgraph + primitives + tick engine + decision trees)
-- **Application B:** Protocol patent (communication protocol + knowledge architecture)
-- **Application C:** Methods patent (ontology derivation + convergence validation)
+- **Application A:** System patent (eventgraph + primitives + tick engine + decision trees) — claims 1-7
+- **Application B:** Intra-system protocol patent (communication protocol + knowledge architecture) — claims 8-10
+- **Application C:** Inter-system protocol patent (EGIP — cross-graph references, integrity proofs, treaties, trust) — claims 11-16. **This is arguably the most commercially valuable patent.**
+- **Application D:** Methods patent (ontology derivation + convergence validation) — claims 17-20
 
 Or file as one if the examiner doesn't require division.
 
@@ -73,6 +77,10 @@ Or file as one if the examiner doesn't require division.
 The spec differentiates from:
 - **Blockchain/DLT:** Our hash chain is single-writer with causal DAG overlay, not distributed consensus
 - **Multi-agent systems (JADE, FIPA):** Our primitives are LLM-native with evolving decision trees, not rule-based
+- **A2A (Google/Linux Foundation):** Relies on central registries; no causal linking, no integrity proofs, no federated governance
+- **ACP (IBM):** Central broker model; no hash chain integrity, no bilateral audit trail
+- **MCP (Anthropic):** Tool discovery for single agent, not inter-system protocol
+- **Cross-chain bridges:** Move assets, not causal semantics; no trust accumulation through observation
 - **Pub/sub systems:** Our events are hash-chained with causal links, not fire-and-forget
 - **RAFT/Paxos:** We're not doing distributed consensus — single event graph with integrity verification
 

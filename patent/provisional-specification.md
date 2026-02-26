@@ -14,7 +14,7 @@
 
 ## TECHNICAL FIELD
 
-This specification relates to autonomous software agent systems, and more particularly to: (a) a hash-chained causal event graph architecture for recording, auditing, and reasoning about agent actions; (b) a communication protocol enabling distributed cognitive primitives to exchange messages, learn, and self-improve through event-mediated interaction; and (c) a layered ontological framework for deriving and organising cognitive primitives across functional strata.
+This specification relates to autonomous software agent systems, and more particularly to: (a) a hash-chained causal event graph architecture for recording, auditing, and reasoning about agent actions; (b) a communication protocol enabling distributed cognitive primitives to exchange messages, learn, and self-improve through event-mediated interaction; (c) an inter-system communication protocol enabling sovereign autonomous systems with independent event graphs to communicate with causal linking, integrity verification, bilateral governance, and trust accumulation across graph boundaries; and (d) a layered ontological framework for deriving and organising cognitive primitives across functional strata.
 
 ---
 
@@ -68,7 +68,23 @@ In a second aspect, the invention provides a **communication protocol for distri
 
 - **universal capability tools** available to all primitives including: event graph queries (recent, by type, by source, causal chain traversal), memory operations (remember, recall, forget), state operations (get, set, snapshot of other primitives), graph adjacency queries, budget status queries, actor lookups, event emission, and decision recording.
 
-In a third aspect, the invention provides a **method for deriving a cognitive ontology** comprising:
+In a third aspect, the invention provides an **inter-system communication protocol** (EventGraph Interchange Protocol) enabling sovereign autonomous systems with independent event graphs to communicate, comprising:
+
+- a **self-sovereign identity model** wherein each system possesses a cryptographic keypair (Ed25519), the public key constituting the system's identity encoded as a System URI, requiring no central registry;
+
+- a **cross-graph event reference (CGER)** data structure comprising a system URI, event identifier, event hash, event type, and timestamp, enabling causal links to span event graph boundaries such that an event in one system's graph can declare as its cause an event in a foreign system's graph;
+
+- a **signed message envelope** comprising sender and recipient system URIs, a unique message identifier, a CGER identifying the causing event in the sender's graph, a chain head snapshot (event count, latest hash, latest identifier) of the sender's event graph, and an Ed25519 signature computed over a canonical representation of the envelope and payload;
+
+- a **seven-message-type vocabulary** consisting of: HELLO (handshake with capabilities and chain proof), MESSAGE (content delivery with receipt option), RECEIPT (delivery acknowledgment with receiver's local event reference), PROOF (integrity verification via chain segment, event existence, or chain summary proofs), TREATY (bilateral governance agreement proposal, acceptance, rejection, or revocation), AUTHORITY_REQUEST (cross-system approval request governed by treaty terms), and DISCOVER (lightweight capability query);
+
+- a **treaty model** for federated governance, wherein two systems negotiate bilateral agreements specifying: shared capabilities, authority rules for cross-system actions (bilateral, sender-only, or receiver-only approval), data sharing boundaries with field-level redaction, trust parameters, and rate limits, with all treaty actions signed and recorded as events in both systems' graphs;
+
+- a **trust accumulation model** wherein trust between systems is continuous (0.0 to 1.0), starts low, increases slowly through successful interactions and verified integrity proofs, decreases rapidly on violations, decays over time without interaction, is asymmetric (each system maintains its own trust assessment), and is non-transitive (trust in A does not imply trust in A's trusted systems); and
+
+- **integrity proof exchange** enabling a system to verify the integrity of a foreign system's event graph by requesting chain segment proofs (a sequence of event identifiers, hashes, and previous hashes that the requester independently verifies), event existence proofs, or chain summary proofs, without requiring access to the foreign graph's content.
+
+In a fourth aspect, the invention provides a **method for deriving a cognitive ontology** comprising:
 
 - providing a foundation layer of computational primitives representing irreducible operations (event registration, storage, temporal ordering, identity, causality, trust, confidence, integrity verification);
 
@@ -625,7 +641,203 @@ The two derivations converge: the bottom-up derivation's Level 12 (Modelling/Age
 
 This convergence strengthens confidence that the ontological framework reflects structural necessity rather than arbitrary design choice.
 
-### 10. System Invariants
+### 10. Inter-System Communication Protocol (EventGraph Interchange Protocol)
+
+The preceding sections describe communication within a single system's event graph. This section describes a protocol for communication between independent sovereign systems, each maintaining its own hash-chained event graph on its own infrastructure.
+
+#### 10.1 Problem Statement
+
+When multiple autonomous cognitive systems exist — each with its own event graph, cognitive primitives, authority policies, and infrastructure — they require a communication protocol that preserves each system's sovereignty while enabling causal linking, integrity verification, trust accumulation, and bilateral governance across event graph boundaries. Existing inter-agent protocols (A2A, ACP, MCP, FIPA ACL) do not address this because they either rely on central registries or brokers, lack causal semantics across system boundaries, provide no mechanism for verifying a foreign system's event graph integrity, or have no federated governance model.
+
+#### 10.2 System Identity
+
+Each system possesses a cryptographic keypair (Ed25519). The public key constitutes the system's identity and is encoded as a System URI:
+
+```
+eg://<base64url-encoded-public-key>
+```
+
+No central registry is required. If a system possesses another system's public key, it can verify that system's messages. Discovery occurs through any out-of-band mechanism: a human shares a key, a directory lists keys, or a system advertises its key.
+
+#### 10.3 Cross-Graph Event Reference (CGER)
+
+When a message from one system's event graph causes an event in another system's event graph, the causal link must span the graph boundary. A Cross-Graph Event Reference identifies an event in a foreign graph:
+
+```
+CrossGraphRef {
+    system:     SystemURI     // which system's graph
+    event_id:   string        // the event's ID within that graph
+    event_hash: string        // the event's hash (for verification)
+    event_type: string        // what kind of event
+    timestamp:  time          // when it occurred
+}
+```
+
+A CGER is unforgeable: the `event_hash` is computed from the event's content using the sender's hash chain algorithm. The receiver can later request a cryptographic proof that this event exists in the sender's graph (see Section 10.8).
+
+When a system records an event caused by a foreign event, it stores the CGER in its `causes` array alongside local event identifiers. The event graph distinguishes local causes (resolvable by internal query) from cross-graph causes (resolvable via the protocol).
+
+This enables **cross-graph causal traversal**: given any event in any system, an observer can trace the complete chain of causes across multiple independent event graphs by following CGERs.
+
+#### 10.4 Message Envelope
+
+Every protocol message is wrapped in a signed envelope:
+
+```
+Envelope {
+    version:    string          // protocol version ("egip/1")
+    from:       SystemURI       // sender's system URI (public key)
+    to:         SystemURI       // recipient's system URI
+    message_id: string          // unique identifier (UUID v7)
+    timestamp:  time            // creation time
+
+    // Causality
+    cause:      CrossGraphRef   // event in sender's graph that caused this message
+    reply_to:   string          // message_id being replied to (if any)
+    thread_id:  string          // conversation thread identifier
+
+    // Integrity
+    chain_head: ChainHead       // current state of sender's hash chain
+    signature:  string          // Ed25519 signature over canonical envelope + payload
+
+    // Payload
+    type:       MessageType     // message type
+    payload:    object          // type-specific content
+}
+```
+
+The `chain_head` provides a snapshot of the sender's event graph state:
+
+```
+ChainHead {
+    event_count: integer    // total events in the graph
+    latest_hash: string     // hash of the most recent event
+    latest_id:   string     // ID of the most recent event
+    timestamp:   time       // timestamp of the most recent event
+}
+```
+
+The receiver tracks the sender's chain_head over time. If the chain_head ever regresses (count decreases, or a previously-observed hash disappears from the chain), the sender's graph has been tampered with — constituting a trust violation.
+
+#### 10.5 Signature Computation
+
+The envelope signature is computed by:
+
+1. Constructing a canonical string by concatenating with pipe delimiters: version, from, to, message_id, timestamp as nanoseconds, cause as JSON, reply_to, thread_id, chain_head as JSON, type, and payload as JSON.
+2. Computing the SHA-256 hash of the canonical string.
+3. Signing the hash with the sender's Ed25519 private key.
+
+The receiver verifies by reconstructing the canonical string, computing its SHA-256 hash, and verifying the Ed25519 signature against the sender's public key (extracted from the `from` System URI).
+
+#### 10.6 Message Types
+
+The protocol defines seven message types:
+
+**HELLO** — Establishes a channel between two systems. Contains: a human-readable name, an array of capabilities (event types the system can process), a chain proof (the last N events' identifiers, hashes, and previous hashes for integrity verification), and optionally a proposed treaty.
+
+**MESSAGE** — The primary content delivery message. Contains: a content type (text, event, task, query, or structured data), the content itself, a priority level, a time-to-live duration, and a flag indicating whether a receipt is required. When received, the system verifies the signature, records a `message.received.external` event in its own graph with the CGER as a cause, and routes the content to relevant primitives.
+
+**RECEIPT** — Confirms delivery. Contains: the received message's identifier, the event identifier and hash where it was recorded in the receiver's graph, and a status (received, processing, or rejected). This creates a bilateral audit trail: the sender knows exactly where in the receiver's graph the message was recorded.
+
+**PROOF** — Integrity verification. A system can request proof that another system's event graph is intact. Three proof types are supported:
+
+- *Chain segment*: Given two event identifiers, the responding system provides the sequence of (identifier, hash, previous hash) entries between them. The requester recomputes each hash and verifies chain links, confirming integrity without accessing event content.
+- *Event existence*: Given an event identifier and hash, the responding system provides the full event plus its chain neighbours, proving the event exists and is properly linked.
+- *Chain summary*: The responding system provides a sparse sequence of chain entries (every Nth event), enabling statistical integrity verification without transferring the full chain.
+
+**TREATY** — Governance agreements (described in Section 10.7).
+
+**AUTHORITY_REQUEST** — Cross-system approval request. Contains: a request identifier, the action being requested, a justification, the governing treaty identifier, and the required approval level. The receiving system processes this through its authority subsystem, potentially requiring human approval, and responds with an AUTHORITY_RESPONSE containing the decision and any conditions.
+
+**DISCOVER** — Lightweight capability discovery. A system can query what another system can do without establishing a treaty. The response lists capabilities with their names, descriptions, event types, and whether a treaty is required to use them.
+
+#### 10.7 Treaties — Federated Governance
+
+A treaty is a bilateral agreement between two systems governing their interaction. Treaties are the inter-system equivalent of internal authority policies.
+
+A treaty contains:
+
+**Shared capabilities**: Which event types each system will accept from the other.
+
+**Authority rules**: For each category of cross-system action, whether approval is required from both systems (bilateral), only the sender, or only the receiver.
+
+**Data sharing boundaries**: Which event types may be shared, which fields must be redacted before sharing, and whether integrity proofs are permitted.
+
+**Trust parameters**: The initial trust level, how often integrity proofs should be exchanged, the trust penalty for violations, and the trust reward for successful interactions.
+
+**Rate limits**: Maximum messages per hour, tasks per day, and proof requests per hour.
+
+Treaty lifecycle:
+1. System A sends a TREATY message with `action: "propose"` and proposed terms.
+2. Both systems record the proposal as events in their respective graphs.
+3. System B evaluates the terms, potentially involving human authority for significant commitments.
+4. System B sends a TREATY message with `action: "accept"` or `action: "reject"`.
+5. Both systems record the resolution.
+
+Treaties have expiration dates and must be renewed. Either party may revoke a treaty at any time. Renegotiation references the superseded treaty. All treaty actions are signed and recorded as events in both graphs, preventing either party from claiming terms that were not mutually agreed upon.
+
+**Bilateral authority**: When a treaty specifies that an action requires bilateral approval, the requesting system sends an AUTHORITY_REQUEST, and the receiving system's authority subsystem evaluates it. Both approvals (or the rejection) are recorded as events in their respective graphs with CGERs linking them, creating a verifiable bilateral decision trail.
+
+#### 10.8 Trust Model
+
+Trust between systems is continuous (0.0 to 1.0) and computed from observable behaviour recorded in the local event graph.
+
+Each system maintains a trust record for every system it has interacted with:
+
+```
+SystemTrust {
+    system:              SystemURI
+    score:               float      // 0.0 to 1.0
+    interactions:        integer    // total interactions
+    successful:          integer    // successful completions
+    violations:          integer    // integrity violations, broken promises, timeouts
+    last_proof_verified: time       // last verified chain integrity
+    last_interaction:    time       // last communication
+    treaty_id:           string     // active treaty
+}
+```
+
+Trust dynamics:
+- **Starts low**: Default initial trust is 0.1 (configurable in treaty terms).
+- **Increases slowly**: Each successful interaction increases trust by a small amount (default 0.01).
+- **Decreases rapidly**: Violations decrease trust by a larger amount (default 0.1).
+- **Decays over time**: Trust decays toward zero without interaction (configurable half-life).
+- **Integrity proofs boost trust**: Successfully verified chain proofs provide larger trust increases than routine messages.
+- **Asymmetric**: System A's trust in System B is independent of System B's trust in System A. Trust is a local assessment.
+- **Non-transitive**: If A trusts B and B trusts C, A does not automatically trust C.
+
+Treaties can specify trust thresholds for different capabilities:
+- Basic messaging: trust >= 0.1
+- Task acceptance: trust >= 0.3
+- Event sharing: trust >= 0.5
+- Bilateral actions: trust >= 0.7
+- Authority delegation: trust >= 0.9
+
+If trust drops below a threshold, the corresponding capability is suspended until trust is rebuilt.
+
+Trust changes are events on the local event graph (`trust.external.established`, `trust.external.increased`, `trust.external.decreased`, `trust.external.revoked`), providing a complete audit trail of trust evolution.
+
+#### 10.9 Multi-Hop Communication
+
+When a message must traverse multiple systems (e.g., from Hive A through Hive B to Hive C):
+
+1. Each hop creates a new envelope with a new signature from the forwarding system.
+2. The `cause` CGER references the event in the forwarding system's graph, not the original sender's.
+3. The causal chain is preserved: System C can trace back through System B to System A by following CGERs.
+4. Each system only trusts its direct neighbour. Trust is not transitive.
+
+This design ensures that each system in the chain is independently accountable for its forwarding decisions, and no system needs to trust a system it has not directly interacted with.
+
+#### 10.10 Security Properties
+
+- **Replay prevention**: Each envelope has a unique message_id and timestamp. Receivers track seen identifiers and reject duplicates. The time-to-live field limits the validity window.
+- **Authentication**: All messages are signed with Ed25519. The `from` field is the public key itself, eliminating registry-based attacks.
+- **Integrity**: Messages cannot be modified in transit without breaking the signature. The chain_head in each envelope enables ongoing integrity monitoring.
+- **Tamper detection**: Integrity proofs make fraudulent event graphs detectable. If a system provides inconsistent proofs to different peers, the inconsistency is discoverable.
+- **Rate limiting**: Treaty-based rate limits prevent flooding. Systems can unilaterally drop messages from revoked-trust systems.
+- **Treaty integrity**: Treaty proposals and acceptances are signed and recorded in both graphs, preventing unilateral claims about agreed terms.
+
+### 11. System Invariants
 
 The system enforces ten invariants, each monitored by one or more cognitive primitives:
 
@@ -677,23 +889,57 @@ The system enforces ten invariants, each monitored by one or more cognitive prim
 
 10. The method of claim 8, wherein primitives span a continuum from mechanical to intelligent, wherein mechanical primitives operate primarily through deterministic processing branches with fallthrough to language model reasoning for exceptional situations, and intelligent primitives operate primarily through language model reasoning with progressively growing deterministic branches for recognised patterns.
 
+### Claims for the Inter-System Communication Protocol
+
+11. A method of communication between a plurality of autonomous systems each maintaining an independent hash-chained event graph, comprising:
+    (a) providing each system with a cryptographic keypair, the public key constituting the system's identity, wherein no central registry is required for identity management;
+    (b) defining a cross-graph event reference (CGER) data structure comprising a system identifier derived from the system's public key, an event identifier, an event hash, an event type, and a timestamp, said CGER enabling an event in one system's event graph to declare as a causal predecessor an event residing in a different system's event graph;
+    (c) wrapping each inter-system message in a signed envelope comprising: sender and recipient system identifiers, a unique message identifier, a CGER identifying the causing event in the sender's graph, a chain head snapshot of the sender's event graph, and a cryptographic signature computed over a canonical representation of the envelope and payload;
+    (d) upon receipt of a message, the receiving system verifying the envelope signature, recording the message as an event in its own event graph with the CGER as a causal predecessor, and routing the message content to relevant cognitive primitives; and
+    (e) whereby each inter-system message is independently recorded in both the sender's and receiver's event graphs with cross-graph causal references linking them, creating a bilateral audit trail that is independently verifiable by either system.
+
+12. The method of claim 11, further comprising an integrity proof exchange mechanism wherein:
+    (a) a first system sends a proof request to a second system specifying a proof type selected from: chain segment proof (a sequence of event identifiers, hashes, and previous hashes between two specified events), event existence proof (a single event with its chain neighbours), and chain summary proof (a sparse sequence of chain entries);
+    (b) the second system extracts the requested proof data from its event graph and returns it in a signed response;
+    (c) the first system independently recomputes hashes from the proof data and verifies chain linkage; and
+    (d) successful verification increases the first system's trust in the second system, while failed verification decreases trust and may trigger treaty revocation.
+
+13. The method of claim 11, further comprising a treaty-based federated governance mechanism wherein:
+    (a) a first system proposes treaty terms to a second system, said terms specifying: shared capabilities, authority rules for cross-system actions, data sharing boundaries with field-level redaction controls, trust parameters, and rate limits;
+    (b) the second system evaluates and accepts, rejects, or counter-proposes the terms;
+    (c) accepted treaties are recorded as signed events in both systems' event graphs;
+    (d) cross-system actions governed by bilateral authority rules require approval from both systems' authority subsystems before execution; and
+    (e) either system may revoke a treaty at any time, with the revocation recorded in both event graphs.
+
+14. The method of claim 11, further comprising a trust accumulation model wherein:
+    (a) each system maintains a continuous trust score (0.0 to 1.0) for each system it has interacted with;
+    (b) trust starts at a low initial value and increases through successful message exchanges and verified integrity proofs;
+    (c) trust decreases upon violations including integrity proof failures, unfulfilled obligations, and message timeouts;
+    (d) trust decays toward zero over time without interaction;
+    (e) trust is asymmetric such that each system independently maintains its own trust assessment; and
+    (f) trust is non-transitive such that a first system's trust in a second system does not confer trust in systems trusted by the second system.
+
+15. The method of claim 11, wherein multi-hop communication across more than two systems is achieved by: each forwarding system creating a new signed envelope with the cause CGER referencing the event in the forwarding system's own graph; the causal chain being preserved across all hops such that the final recipient can trace back through each forwarding system's graph to the originator by following CGERs; and each system in the chain being independently accountable for its forwarding decisions.
+
+16. The method of claim 11, wherein the envelope includes a chain head snapshot comprising the sender's current event count, latest event hash, latest event identifier, and latest timestamp, and the receiving system monitors the sender's chain head over successive messages to detect chain regression, wherein a decrease in event count or disappearance of a previously-observed hash constitutes a detectable integrity violation.
+
 ### Claims for the Ontology Derivation Method
 
-11. A method for deriving a cognitive ontology for an autonomous agent system, comprising:
+17. A method for deriving a cognitive ontology for an autonomous agent system, comprising:
     (a) defining a foundation layer of computational primitives representing irreducible cognitive operations including event registration, causal linking, identity management, trust assessment, confidence evaluation, and integrity verification;
     (b) for each successive layer above the foundation, identifying a functional gap — a capability that the layer below cannot express but is structurally necessary for higher-order cognition;
     (c) deriving primitives to fill said functional gap, organised into groups of related primitives;
     (d) enforcing a layer activation constraint such that primitives at a given layer activate only when the layer below is stable; and
     (e) recognising irreducible elements that cannot be derived from lower layers as foundational recognitions rather than emergent properties.
 
-12. The method of claim 11, further comprising validating the derived ontology through independent derivation from a complementary starting point, and confirming convergence between the two derivations on structural and qualitative conclusions.
+18. The method of claim 17, further comprising validating the derived ontology through independent derivation from a complementary starting point, and confirming convergence between the two derivations on structural and qualitative conclusions.
 
-13. The method of claim 11, wherein the layers comprise, in order: Foundation (irreducible operations), Agency (observer to participant), Exchange (individual to dyad), Society (dyad to group), Legal (informal to formal), Technology (governing to building), Information (physical to symbolic), Ethics (descriptive to normative), Identity (doing to being), Relationship (self to self-with-other), Community (relationship to belonging), Culture (living to examining), Emergence (content to architecture), and Existence (everything to the fact of everything).
+19. The method of claim 17, wherein the layers comprise, in order: Foundation (irreducible operations), Agency (observer to participant), Exchange (individual to dyad), Society (dyad to group), Legal (informal to formal), Technology (governing to building), Information (physical to symbolic), Ethics (descriptive to normative), Identity (doing to being), Relationship (self to self-with-other), Community (relationship to belonging), Culture (living to examining), Emergence (content to architecture), and Existence (everything to the fact of everything).
 
-14. The method of claim 11, wherein the derived ontology forms a strange loop in which the highest layer (Existence — the fact that anything exists) is presupposed by the lowest layer (Foundation — the occurrence of events).
+20. The method of claim 17, wherein the derived ontology forms a strange loop in which the highest layer (Existence — the fact that anything exists) is presupposed by the lowest layer (Foundation — the occurrence of events).
 
 ---
 
 ## ABSTRACT
 
-An autonomous cognitive agent system comprises: an event graph store maintaining a hash-chained, append-only, causally-linked event log; a plurality of cognitive primitives organised in a hierarchical ontology across fourteen layers, each primitive having an activation level, a lifecycle state machine, a key-value state store, and a processing function; a tick engine that propagates events through primitives in ripple waves until quiescence; a decision tree engine enabling progressive migration from language-model-based reasoning to deterministic rules; an authority system for three-tier approval of significant actions; and a communication protocol built on a four-event vocabulary (MessageSent, MessageReceived, Decision, Action) with semantic gateway routing, three-layer knowledge architecture, and full causal tracing through the event graph. A method for deriving the cognitive ontology by iteratively identifying functional gaps between layers produces a fourteen-layer framework from Foundation through Existence, validated by convergent independent derivation from complementary starting points.
+An autonomous cognitive agent system comprises: an event graph store maintaining a hash-chained, append-only, causally-linked event log; a plurality of cognitive primitives organised in a hierarchical ontology across fourteen layers, each primitive having an activation level, a lifecycle state machine, a key-value state store, and a processing function; a tick engine that propagates events through primitives in ripple waves until quiescence; a decision tree engine enabling progressive migration from language-model-based reasoning to deterministic rules; an authority system for three-tier approval of significant actions; an intra-system communication protocol built on a four-event vocabulary with semantic gateway routing and three-layer knowledge architecture; and an inter-system communication protocol (EventGraph Interchange Protocol) enabling sovereign systems with independent event graphs to communicate via signed envelopes carrying cross-graph event references for causal linking across graph boundaries, integrity proof exchange for verifying foreign graph integrity, treaty-based federated governance for bilateral authority, and trust accumulation through observed interaction history. A method for deriving the cognitive ontology by iteratively identifying functional gaps between layers produces a fourteen-layer framework from Foundation through Existence, validated by convergent independent derivation from complementary starting points.

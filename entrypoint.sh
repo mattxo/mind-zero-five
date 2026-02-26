@@ -63,6 +63,38 @@ if [ -d "$PROJECT_CLAUDE" ] && [ ! -L "$PROJECT_CLAUDE" ]; then
 fi
 ln -sfn "$CLAUDE_PROJECT_DATA" "$PROJECT_CLAUDE"
 
+# --- Session helper script ---
+# Creates /data/bin/m — a single command to resume or start a tmux+claude session.
+# Survives SSH disconnects (tmux) and machine restarts (claude --continue).
+mkdir -p /data/bin
+cat > /data/bin/m << 'SCRIPT'
+#!/bin/bash
+SESSION="mind"
+WORKDIR="/data/source"
+
+# If already inside the tmux session, just run claude
+if [ "$TMUX" ] && [ "$(tmux display-message -p '#S')" = "$SESSION" ]; then
+    cd "$WORKDIR"
+    exec claude --continue "$@"
+fi
+
+# If tmux session exists, attach to it
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "Attaching to existing session..."
+    exec tmux attach -t "$SESSION"
+fi
+
+# No session — start a new tmux session with claude --continue
+echo "Starting new session (resuming last conversation)..."
+exec tmux new-session -s "$SESSION" -c "$WORKDIR" "claude --continue $*; bash"
+SCRIPT
+chmod +x /data/bin/m
+
+# Add /data/bin to PATH for all users
+if ! grep -q '/data/bin' /etc/profile 2>/dev/null; then
+    echo 'export PATH="/data/bin:$PATH"' >> /etc/profile
+fi
+
 echo "entrypoint: source=$SOURCE_DATA, claude=$CLAUDE_DATA, ssh=$SSH_DATA"
 echo "entrypoint: starting server as app"
 
