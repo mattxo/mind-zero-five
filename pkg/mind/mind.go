@@ -899,55 +899,6 @@ func (m *Mind) markBlocked(ctx context.Context, taskID, reason string, causes []
 	}, causes)
 }
 
-// recoverStaleTasks finds in_progress tasks assigned to the mind that have not
-// been updated in more than 30 minutes — indicating a crash mid-execution —
-// and resets them to pending so they can be picked up again.
-func (m *Mind) recoverStaleTasks(ctx context.Context) {
-	tasks, err := m.tasks.List(ctx, "in_progress", 50)
-	if err != nil {
-		log.Printf("mind: list in_progress tasks: %v", err)
-		return
-	}
-
-	cutoff := time.Now().Add(-30 * time.Minute)
-
-	for i := range tasks {
-		t := &tasks[i]
-		if t.Assignee != "mind" {
-			continue
-		}
-		if t.UpdatedAt.After(cutoff) {
-			continue // not stale yet
-		}
-
-		// Build updated metadata, preserving existing fields
-		meta := map[string]any{}
-		if t.Metadata != nil {
-			for k, v := range t.Metadata {
-				meta[k] = v
-			}
-		}
-		meta["prev_failure_reason"] = fmt.Sprintf("stale: task was in_progress for >30min (likely a crash, stale_for=%s)", time.Since(t.UpdatedAt).Round(time.Minute))
-
-		if _, err := m.tasks.Update(ctx, t.ID, map[string]any{
-			"status":   "pending",
-			"assignee": "",
-			"metadata": meta,
-		}); err != nil {
-			log.Printf("mind: recover stale task %s: %v", t.ID, err)
-			continue
-		}
-
-		m.logEvent(ctx, "task.stale_recovered", map[string]any{
-			"task_id":   t.ID,
-			"subject":   t.Subject,
-			"stale_for": time.Since(t.UpdatedAt).Round(time.Minute).String(),
-		}, nil)
-
-		log.Printf("mind: recovered stale in_progress task %s: %s", t.ID, t.Subject)
-	}
-}
-
 // retryBlockedTasks finds blocked tasks assigned to the mind that are older than
 // 15 minutes and have been retried fewer than 3 times, then requeues them as
 // pending. Returns true if any tasks were retried.
