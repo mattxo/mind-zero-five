@@ -840,9 +840,14 @@ func (m *Mind) finishTask(ctx context.Context, t *task.Task, causes []string) {
 		return
 	}
 
-	m.logEvent(ctx, "build.completed", map[string]any{
+	deployEvent, _ := m.logEvent(ctx, "build.completed", map[string]any{
 		"task_id": t.ID,
 	}, causes)
+
+	deployCauses := causes
+	if deployEvent != nil {
+		deployCauses = []string{deployEvent.ID}
+	}
 
 	// Skip restart — run single-threaded. New binaries take effect on next
 	// container restart. This prevents the restart→orphan→stale recovery loop.
