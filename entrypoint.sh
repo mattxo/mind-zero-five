@@ -102,10 +102,11 @@ ln -sf /usr/local/go/bin/go /usr/local/bin/go 2>/dev/null || true
 
 # --- Build from /data/source if newer than installed binaries ---
 # The persistent volume has the latest code; Docker image binaries may be stale.
+# Compare latest git commit time against server binary.
 if [ -f "$SOURCE_DATA/go.mod" ]; then
-    SOURCE_MOD=$(stat -c %Y "$SOURCE_DATA/go.mod" 2>/dev/null || echo 0)
+    LATEST_SRC=$(cd "$SOURCE_DATA" && git log -1 --format=%ct 2>/dev/null || echo 0)
     SERVER_MOD=$(stat -c %Y /usr/local/bin/server 2>/dev/null || echo 0)
-    if [ "$SOURCE_MOD" -gt "$SERVER_MOD" ]; then
+    if [ "$LATEST_SRC" -gt "$SERVER_MOD" ]; then
         echo "entrypoint: source is newer than binaries, rebuilding..."
         cd "$SOURCE_DATA"
         if /usr/local/go/bin/go build -o /usr/local/bin/server ./cmd/server && \
