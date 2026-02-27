@@ -26,11 +26,15 @@ RUN cd /usr/local/share/mz5-source && go mod download
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
+# Boot script: prefer persistent volume entrypoint over Docker image copy.
+# This allows the mind to update its own entrypoint without rebuilding the image.
+RUN printf '#!/bin/sh\nif [ -x /data/source/entrypoint.sh ]; then exec /data/source/entrypoint.sh "$@"; fi\nexec /usr/local/bin/entrypoint.sh "$@"\n' > /usr/local/bin/boot.sh && chmod +x /usr/local/bin/boot.sh
+
 RUN mkdir -p /data/repos && chown -R app:app /data
 RUN chown -R app:app /home/app /usr/local/share/mz5-source
 
 WORKDIR /home/app
 ENV WASM_DIR=/home/app/web
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/boot.sh"]
 CMD ["server"]
