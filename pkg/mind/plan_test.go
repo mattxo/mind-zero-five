@@ -4,18 +4,19 @@ import "testing"
 
 // --- isAlreadyDone tests ---
 
-// TestIsAlreadyDoneCompletionLanguage verifies that each known completion phrase
+// TestIsAlreadyDoneCompletionLanguage verifies that each known completion signal
 // causes isAlreadyDone to return true.
 func TestIsAlreadyDoneCompletionLanguage(t *testing.T) {
 	cases := []struct {
 		name     string
 		response string
 	}{
+		{"explicit tag", "[ALREADY_DONE]"},
+		{"tag in prose", "After analysis: [ALREADY_DONE]"},
 		{"already done", "This task is already done."},
 		{"already implemented", "The feature is already implemented in pkg/foo/bar.go."},
 		{"no changes needed", "No changes needed — the code is correct."},
 		{"no changes required", "No changes required for this task."},
-		{"completed", "This was completed in a prior commit."},
 		{"already exists", "The function already exists at line 42."},
 		{"already present", "The test is already present in the test file."},
 		{"mixed case", "The validation is Already Implemented correctly."},
@@ -24,6 +25,27 @@ func TestIsAlreadyDoneCompletionLanguage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if !isAlreadyDone(tc.response) {
 				t.Errorf("isAlreadyDone(%q) = false, want true", tc.response)
+			}
+		})
+	}
+}
+
+// TestIsAlreadyDoneNoFalsePositives verifies that "completed" in ambiguous
+// contexts does not trigger auto-complete, which would silently drop real work.
+func TestIsAlreadyDoneNoFalsePositives(t *testing.T) {
+	cases := []struct {
+		name     string
+		response string
+	}{
+		{"needs to be completed", "This refactoring needs to be completed before release."},
+		{"not yet completed", "Not yet completed — still needs work."},
+		{"was completed", "This was completed in a prior commit."},
+		{"standalone word", "completed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if isAlreadyDone(tc.response) {
+				t.Errorf("isAlreadyDone(%q) = true, want false (false positive)", tc.response)
 			}
 		})
 	}
@@ -45,11 +67,9 @@ func TestIsAlreadyDoneUnrelatedContent(t *testing.T) {
 	}{
 		{"error message", "failed to parse input: unexpected token"},
 		{"random text", "the quick brown fox jumps over the lazy dog"},
-		{"partial word", "completion is not a match for completed on its own... wait, it has 'completed'"},
+		{"completed word only", "completion is not a match for completed on its own"},
 	}
-	// The last case actually contains "completed" so it should return true — test only genuinely unrelated cases.
-	genuinelyUnrelated := cases[:2]
-	for _, tc := range genuinelyUnrelated {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if isAlreadyDone(tc.response) {
 				t.Errorf("isAlreadyDone(%q) = true, want false", tc.response)

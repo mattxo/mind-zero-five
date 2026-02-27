@@ -38,11 +38,14 @@ Rules:
 Output format — one tag per subtask, each on its own line:
 [TASK:subject|description|model]
 
+If the task is already complete and requires NO code changes, output exactly:
+[ALREADY_DONE]
+
 Example:
 [TASK:Add validation to pkg/api/handler.go|Add input validation for the Create endpoint, checking required fields and returning 400 on invalid input|sonnet]
 [TASK:Add test for validation in pkg/api/handler_test.go|Test that invalid input returns 400 with appropriate error message|sonnet]
 
-Output ONLY the [TASK:...] tags, nothing else.`
+Output ONLY the [TASK:...] tags or [ALREADY_DONE], nothing else.`
 
 // Plan asks Opus to decompose a task into subtasks.
 func (m *Mind) Plan(ctx context.Context, t *task.Task) ([]SubtaskSpec, error) {
@@ -82,16 +85,27 @@ func (m *Mind) Plan(ctx context.Context, t *task.Task) ([]SubtaskSpec, error) {
 // taskTagRe matches [TASK:subject|description|model] tags.
 var taskTagRe = regexp.MustCompile(`\[TASK:([^|]+)\|([^|]+)\|([^]]+)\]`)
 
-// isAlreadyDone returns true if the response contains completion indicators
-// suggesting the task requires no changes.
+// isAlreadyDone returns true if the response contains strong signals indicating
+// the task requires no changes. The explicit [ALREADY_DONE] tag (emitted by the
+// planner when it determines nothing needs doing) is the primary signal.
+// Natural-language phrases are kept as a fallback but "completed" is
+// intentionally excluded — it appears in sentences like "needs to be completed
+// before release" or "not yet completed" and would cause false positives that
+// silently drop real work.
 func isAlreadyDone(response string) bool {
+	// Primary: explicit tag from the planner.
+	if strings.Contains(response, "[ALREADY_DONE]") {
+		return true
+	}
+
+	// Fallback: high-confidence phrases that are unlikely to appear in a
+	// negative or conditional context.
 	lower := strings.ToLower(response)
 	indicators := []string{
 		"already done",
 		"already implemented",
 		"no changes needed",
 		"no changes required",
-		"completed",
 		"already exists",
 		"already present",
 	}

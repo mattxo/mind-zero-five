@@ -518,6 +518,34 @@ func printJSON(v any) {
 	}
 }
 
+func truncStr(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+func printShortEvents(events []eventgraph.Event) {
+	for _, e := range events {
+		ts := ""
+		if len(e.Timestamp.String()) > 19 {
+			ts = e.Timestamp.Format("15:04:05")
+		}
+		content := ""
+		if b, err := json.Marshal(e.Content); err == nil {
+			content = string(b)
+		}
+		fmt.Printf("%-8s  %-35s  %s\n", ts, truncStr(e.Type, 35), truncStr(content, 80))
+	}
+}
+
+func printShortTasks(tasks []task.Task) {
+	for _, t := range tasks {
+		id := truncStr(t.ID, 8)
+		fmt.Printf("%-8s  %-12s  %s\n", id, t.Status, truncStr(t.Subject, 60))
+	}
+}
+
 func fatal(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "eg: "+format+"\n", args...)
 	os.Exit(1)
