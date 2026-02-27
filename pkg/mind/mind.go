@@ -8,6 +8,7 @@ package mind
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -708,19 +709,26 @@ func (m *Mind) finishTask(ctx context.Context, t *task.Task, causes []string) {
 	// Final push (in case subtask commits haven't been pushed yet)
 	commitMsg := fmt.Sprintf("mind: %s", t.Subject)
 	if err := GitCommitAndPush(ctx, m.repoDir, commitMsg); err != nil {
-		log.Printf("mind: final commit/push for task %s: %v", t.ID, err)
-		m.logEvent(ctx, "git.commit_push.failed", map[string]any{
+		if errors.Is(err, ErrNothingToPush) {
+			// No-op: working tree was already clean. Skip commit log event but
+			// still complete the task and restart — work was done.
+			log.Printf("mind: task %s: nothing to push (already clean)", t.ID)
+		} else {
+			log.Printf("mind: final commit/push for task %s: %v", t.ID, err)
+			m.logEvent(ctx, "git.commit_push.failed", map[string]any{
+				"task_id": t.ID,
+				"error":   truncate(err.Error(), 500),
+			}, causes)
+			// Block — do NOT complete or restart. Unpushed work dies on restart.
+			m.markBlocked(ctx, t.ID, "git push failed — unpushed work at risk: "+truncate(err.Error(), 200), causes)
+			return
+		}
+	} else {
+		m.logEvent(ctx, "code.committed", map[string]any{
 			"task_id": t.ID,
-			"error":   truncate(err.Error(), 500),
+			"message": commitMsg,
 		}, causes)
-		// Block — do NOT complete or restart. Unpushed work dies on restart.
-		m.markBlocked(ctx, t.ID, "git push failed — unpushed work at risk: "+truncate(err.Error(), 200), causes)
-		return
 	}
-	m.logEvent(ctx, "code.committed", map[string]any{
-		"task_id": t.ID,
-		"message": commitMsg,
-	}, causes)
 
 	// Complete the task
 	if _, err := m.tasks.Complete(ctx, t.ID); err != nil {
