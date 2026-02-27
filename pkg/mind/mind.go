@@ -37,9 +37,6 @@ type Mind struct {
 	pendingProposal string    // authority request ID for current improvement proposal
 	lastAssessment  time.Time // when the last assessment ran
 	assessInterval  time.Duration
-
-	// preflightFailed debounces mind.preflight.failed events — only emitted on state change.
-	preflightFailed bool
 }
 
 // New creates a Mind.
@@ -131,9 +128,8 @@ func (m *Mind) Run(ctx context.Context) {
 }
 
 // preflight verifies that required binaries (claude, git, go) are available in PATH.
-// Emits a mind.preflight.failed event on state change (first failure) and returns an error
-// listing missing binaries. Caller is responsible for emitting mind.preflight.restored on recovery.
-func (m *Mind) preflight(ctx context.Context) error {
+// Returns an error listing any missing binaries.
+func (m *Mind) preflight() error {
 	required := []string{"claude", "git", "go"}
 	var missing []string
 	for _, bin := range required {
@@ -142,16 +138,7 @@ func (m *Mind) preflight(ctx context.Context) error {
 		}
 	}
 	if len(missing) > 0 {
-		err := fmt.Errorf("missing required binaries: %s", strings.Join(missing, ", "))
-		// Only emit event on state change to avoid flooding the eventgraph.
-		if !m.preflightFailed {
-			m.preflightFailed = true
-			m.logEvent(ctx, "mind.preflight.failed", map[string]any{
-				"missing": missing,
-				"error":   err.Error(),
-			}, nil)
-		}
-		return err
+		return fmt.Errorf("missing required binaries: %s", strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -171,13 +158,12 @@ func (m *Mind) poll(ctx context.Context) {
 	writeHeartbeat()
 
 	// Preflight check — ensure required binaries are available before doing any work
-	if err := m.preflight(ctx); err != nil {
+	if err := m.preflight(); err != nil {
 		log.Printf("mind: preflight failed: %v", err)
+		m.logEvent(ctx, "mind.preflight.failed", map[string]any{
+			"error": err.Error(),
+		}, nil)
 		return
-	}
-	if m.preflightFailed {
-		m.preflightFailed = false
-		m.logEvent(ctx, "mind.preflight.restored", map[string]any{}, nil)
 	}
 
 	// Priority order: restart > proposal > tasks > assess
