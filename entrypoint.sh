@@ -97,22 +97,8 @@ fi
 
 echo "entrypoint: source=$SOURCE_DATA, claude=$CLAUDE_DATA, ssh=$SSH_DATA"
 
-# --- Start mind process in background ---
-# Mind runs as root (needs Claude CLI, git, go build, syscall.Exec).
-# It restarts itself independently via syscall.Exec without affecting the server.
-echo "entrypoint: starting mind process in background"
-/usr/local/bin/mind &
-MIND_PID=$!
-echo "entrypoint: mind started (pid=$MIND_PID)"
-
-# --- Start watchdog ---
-# External process monitor. Does NOT depend on Go, Claude, or Postgres.
-# Restarts mind if it dies, kills it if stuck, reverts if crash-looping.
-if [ -f "$SOURCE_DATA/watchdog.sh" ]; then
-    echo "entrypoint: starting watchdog"
-    /bin/sh "$SOURCE_DATA/watchdog.sh" &
-    echo "entrypoint: watchdog started (pid=$!)"
-fi
-
-echo "entrypoint: starting server as app"
-exec su-exec app "$@"
+# --- Start server (mind runs in-process) ---
+# Server and mind share the same process and event bus.
+# No separate mind process or watchdog needed.
+echo "entrypoint: starting server (mind runs in-process)"
+exec "$@"

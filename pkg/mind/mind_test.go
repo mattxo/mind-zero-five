@@ -2,6 +2,7 @@ package mind
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,7 +178,14 @@ func (s *mockAuthStoreWithPending) Pending(_ context.Context) ([]authority.Reque
 // --- Helpers ---
 
 func newTestMind(ts task.Store) *Mind {
-	return New(&mockEventStore{}, ts, &mockAuthStore{}, "mind", "/tmp")
+	return &Mind{
+		events:         &mockEventStore{},
+		tasks:          ts,
+		auth:           &mockAuthStore{},
+		actorID:        "mind",
+		repoDir:        "/tmp",
+		assessInterval: 5 * time.Minute,
+	}
 }
 
 func addTask(ts *mockTaskStore, id, status, assignee string, updatedAt time.Time, meta map[string]any) {
@@ -458,7 +466,14 @@ func TestRecoverStateSetsFields(t *testing.T) {
 			{ID: "auth-improve-1", Action: "self-improve", Source: "mind", Status: "pending"},
 		},
 	}
-	m := New(&mockEventStore{}, newMockTaskStore(), auth, "mind", "/tmp")
+	m := &Mind{
+		events:         &mockEventStore{},
+		tasks:          newMockTaskStore(),
+		auth:           auth,
+		actorID:        "mind",
+		repoDir:        "/tmp",
+		assessInterval: 5 * time.Minute,
+	}
 
 	m.recoverState(context.Background())
 
@@ -514,7 +529,14 @@ func TestPreflightMissingBinary(t *testing.T) {
 func TestRecoverStateNoMatch(t *testing.T) {
 	// No pending requests at all.
 	auth := &mockAuthStoreWithPending{pending: nil}
-	m := New(&mockEventStore{}, newMockTaskStore(), auth, "mind", "/tmp")
+	m := &Mind{
+		events:         &mockEventStore{},
+		tasks:          newMockTaskStore(),
+		auth:           auth,
+		actorID:        "mind",
+		repoDir:        "/tmp",
+		assessInterval: 5 * time.Minute,
+	}
 
 	m.recoverState(context.Background())
 
@@ -531,11 +553,144 @@ func TestRecoverStateNoMatch(t *testing.T) {
 			{ID: "auth-other", Action: "restart", Source: "human", Status: "pending"},
 		},
 	}
-	m2 := New(&mockEventStore{}, newMockTaskStore(), auth2, "mind", "/tmp")
+	m2 := &Mind{
+		events:         &mockEventStore{},
+		tasks:          newMockTaskStore(),
+		auth:           auth2,
+		actorID:        "mind",
+		repoDir:        "/tmp",
+		assessInterval: 5 * time.Minute,
+	}
 
 	m2.recoverState(context.Background())
 
 	if m2.pendingRestart != "" {
 		t.Errorf("pendingRestart (non-mind source): want empty, got %q", m2.pendingRestart)
+	}
+}
+
+// --- GitCommitAndPush injection tests ---
+
+// restoreGitFns restores the three injectable function vars after a test.
+func restoreGitFns(origGit func(context.Context, string, string) error,
+	origInvoke func(context.Context, string, string, string) (*ClaudeResult, error),
+	origBuild func(context.Context, string) error) {
+	gitCommitAndPushFn = origGit
+	invokeClaudeFn = origInvoke
+	buildAndTestFn = origBuild
+}
+
+// TestExecuteSubtaskBlocksOnGitError verifies that executeSubtask marks the task
+// blocked when GitCommitAndPush returns a real (non-NothingToPush) error.
+func TestExecuteSubtaskBlocksOnGitError(t *testing.T) {
+	origGit, origInvoke, origBuild := gitCommitAndPushFn, invokeClaudeFn, buildAndTestFn
+	defer restoreGitFns(origGit, origInvoke, origBuild)
+
+	invokeClaudeFn = func(_ context.Context, _, _, _ string) (*ClaudeResult, error) {
+		return &ClaudeResult{ExitCode: 0, Result: "ok"}, nil
+	}
+	buildAndTestFn = func(_ context.Context, _ string) error { return nil }
+	gitCommitAndPushFn = func(_ context.Context, _, _ string) error {
+		return errors.New("push failed: remote rejected")
+	}
+
+	ts := newMockTaskStore()
+	// Set recovery_attempted=true so handleFailure goes straight to markBlocked
+	// without attempting to invoke Claude for recovery.
+	addTask(ts, "st-git-err", "in_progress", "mind", time.Now(), map[string]any{
+		"recovery_attempted": true,
+	})
+
+	m := newTestMind(ts)
+	tk := ts.tasks["st-git-err"]
+	m.executeSubtask(context.Background(), tk, nil)
+
+	stored := ts.tasks["st-git-err"]
+	if stored.Status != "blocked" {
+		t.Errorf("expected status=blocked after git push error, got %q", stored.Status)
+	}
+}
+
+// TestExecuteSubtaskContinuesOnNothingToPush verifies that executeSubtask
+// completes the task normally when GitCommitAndPush returns ErrNothingToPush.
+func TestExecuteSubtaskContinuesOnNothingToPush(t *testing.T) {
+	origGit, origInvoke, origBuild := gitCommitAndPushFn, invokeClaudeFn, buildAndTestFn
+	defer restoreGitFns(origGit, origInvoke, origBuild)
+
+	invokeClaudeFn = func(_ context.Context, _, _, _ string) (*ClaudeResult, error) {
+		return &ClaudeResult{ExitCode: 0, Result: "ok"}, nil
+	}
+	buildAndTestFn = func(_ context.Context, _ string) error { return nil }
+	gitCommitAndPushFn = func(_ context.Context, _, _ string) error {
+		return ErrNothingToPush
+	}
+
+	ts := newMockTaskStore()
+	addTask(ts, "st-ntp", "in_progress", "mind", time.Now(), nil)
+
+	m := newTestMind(ts)
+	tk := ts.tasks["st-ntp"]
+	m.executeSubtask(context.Background(), tk, nil)
+
+	stored := ts.tasks["st-ntp"]
+	if stored.Status != "completed" {
+		t.Errorf("expected status=completed on ErrNothingToPush, got %q", stored.Status)
+	}
+}
+
+// TestFinishTaskBlocksOnGitError verifies that finishTask marks the task blocked
+// and does not complete or request restart when GitCommitAndPush fails.
+func TestFinishTaskBlocksOnGitError(t *testing.T) {
+	origGit, origInvoke, origBuild := gitCommitAndPushFn, invokeClaudeFn, buildAndTestFn
+	defer restoreGitFns(origGit, origInvoke, origBuild)
+
+	gitCommitAndPushFn = func(_ context.Context, _, _ string) error {
+		return errors.New("push failed: remote rejected")
+	}
+
+	ts := newMockTaskStore()
+	// recovery_attempted=true prevents attemptRecovery from invoking Claude.
+	addTask(ts, "ft-git-err", "in_progress", "mind", time.Now(), map[string]any{
+		"recovery_attempted": true,
+	})
+
+	m := newTestMind(ts)
+	tk := ts.tasks["ft-git-err"]
+	m.finishTask(context.Background(), tk, nil)
+
+	stored := ts.tasks["ft-git-err"]
+	if stored.Status != "blocked" {
+		t.Errorf("expected status=blocked after git push error, got %q", stored.Status)
+	}
+	if stored.CompletedAt != nil {
+		t.Error("task must not be completed when git push fails")
+	}
+	// finishTask never calls requestRestart — pendingRestart must remain empty.
+	if m.pendingRestart != "" {
+		t.Errorf("pendingRestart: want empty (no restart on error), got %q", m.pendingRestart)
+	}
+}
+
+// TestFinishTaskContinuesOnNothingToPush verifies that finishTask completes the
+// task normally when GitCommitAndPush returns ErrNothingToPush.
+func TestFinishTaskContinuesOnNothingToPush(t *testing.T) {
+	origGit, origInvoke, origBuild := gitCommitAndPushFn, invokeClaudeFn, buildAndTestFn
+	defer restoreGitFns(origGit, origInvoke, origBuild)
+
+	gitCommitAndPushFn = func(_ context.Context, _, _ string) error {
+		return ErrNothingToPush
+	}
+
+	ts := newMockTaskStore()
+	addTask(ts, "ft-ntp", "in_progress", "mind", time.Now(), nil)
+
+	m := newTestMind(ts)
+	tk := ts.tasks["ft-ntp"]
+	m.finishTask(context.Background(), tk, nil)
+
+	stored := ts.tasks["ft-ntp"]
+	// Task must be completed (not blocked) even though the tree was already clean.
+	if stored.Status != "completed" {
+		t.Errorf("expected status=completed on ErrNothingToPush, got %q", stored.Status)
 	}
 }

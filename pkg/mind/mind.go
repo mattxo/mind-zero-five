@@ -1,5 +1,5 @@
 // Package mind implements the autonomous mind loop that:
-// - Polls Postgres for pending tasks every 5 seconds
+// - Subscribes to the event bus and reacts to task.created / authority.resolved events
 // - Invokes Claude Code CLI to execute tasks (with plan, implement, review, finish cycle)
 // - Handles self-assessment when idle to propose improvements
 // - Manages retry and exponential backoff for blocked tasks
@@ -20,9 +20,18 @@ import (
 	"mind-zero-five/pkg/task"
 )
 
+// invokeClaudeFn, buildAndTestFn, and gitCommitAndPushFn are package-level vars
+// that allow tests to inject mock implementations without touching real git/build.
+var (
+	invokeClaudeFn     = InvokeClaude
+	buildAndTestFn     = BuildAndTest
+	gitCommitAndPushFn = GitCommitAndPush
+)
+
 // Mind is the autonomous loop that picks up tasks, invokes Claude Code CLI,
 // builds, commits, deploys, and — when idle — assesses itself for improvements.
 type Mind struct {
+	bus     *eventgraph.Bus
 	events  eventgraph.EventStore
 	tasks   task.Store
 	auth    authority.Store
@@ -42,10 +51,12 @@ type Mind struct {
 	preflightFailed bool
 }
 
-// New creates a Mind.
-func New(events eventgraph.EventStore, tasks task.Store, auth authority.Store, actorID, repoDir string) *Mind {
+// New creates a Mind. The Bus is used both as the EventStore (for reading/writing
+// events) and for subscribing to real-time event notifications.
+func New(bus *eventgraph.Bus, tasks task.Store, auth authority.Store, actorID, repoDir string) *Mind {
 	return &Mind{
-		events:         events,
+		bus:            bus,
+		events:         bus, // Bus satisfies EventStore
 		tasks:          tasks,
 		auth:           auth,
 		actorID:        actorID,
@@ -107,16 +118,21 @@ func (m *Mind) recoverState(ctx context.Context) {
 	}
 }
 
-// Run polls for pending tasks and resolved authority requests until ctx is cancelled.
+// Run subscribes to the event bus and reacts to relevant events until ctx is cancelled.
+// A slow maintenance ticker handles housekeeping (stale recovery, blocked retry, assessment).
 func (m *Mind) Run(ctx context.Context) {
-	log.Println("mind: running, polling for tasks")
+	log.Println("mind: running, event-driven mode")
 
 	m.recoverState(ctx)
 
-	// Catch up immediately on startup
+	ch := m.bus.Subscribe()
+	defer m.bus.Unsubscribe(ch)
+
+	// Catch up on anything pending from before startup
 	m.poll(ctx)
 
-	ticker := time.NewTicker(5 * time.Second)
+	// Maintenance ticker — much slower than old 5s poll, only for housekeeping
+	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -124,10 +140,58 @@ func (m *Mind) Run(ctx context.Context) {
 		case <-ctx.Done():
 			log.Println("mind: shutting down")
 			return
+		case e := <-ch:
+			m.handleEvent(ctx, e)
 		case <-ticker.C:
-			m.poll(ctx)
+			m.maintenance(ctx)
 		}
 	}
+}
+
+// handleEvent reacts to relevant bus events. Ignores events that don't require action.
+func (m *Mind) handleEvent(ctx context.Context, e *eventgraph.Event) {
+	switch e.Type {
+	case "task.created":
+		if err := m.preflight(ctx); err != nil {
+			log.Printf("mind: preflight failed: %v", err)
+			return
+		}
+		m.checkPendingTasks(ctx)
+	case "authority.resolved":
+		if m.pendingRestart != "" {
+			m.checkRestart(ctx)
+		}
+		if m.pendingProposal != "" {
+			m.checkProposal(ctx)
+		}
+	}
+}
+
+// maintenance runs periodic housekeeping: stale recovery, blocked retry, assessment.
+func (m *Mind) maintenance(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("mind: panic in maintenance: %v", r)
+			m.logEvent(ctx, "mind.panic", map[string]any{
+				"error": fmt.Sprintf("%v", r),
+			}, nil)
+		}
+	}()
+
+	writeHeartbeat()
+
+	if err := m.preflight(ctx); err != nil {
+		log.Printf("mind: preflight failed: %v", err)
+		return
+	}
+	if m.preflightFailed {
+		m.preflightFailed = false
+		m.logEvent(ctx, "mind.preflight.restored", map[string]any{}, nil)
+	}
+
+	m.retryBlockedTasks(ctx)
+	m.recoverStaleTasks(ctx)
+	m.maybeAssess(ctx)
 }
 
 // preflight verifies that required binaries (claude, git, go) are available in PATH.
@@ -156,7 +220,7 @@ func (m *Mind) preflight(ctx context.Context) error {
 	return nil
 }
 
-// poll checks for work to do: pending tasks or resolved authority requests.
+// poll runs once on startup to catch up on any pending work.
 func (m *Mind) poll(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -167,40 +231,24 @@ func (m *Mind) poll(ctx context.Context) {
 		}
 	}()
 
-	// Heartbeat — watchdog checks this file to know we're alive
 	writeHeartbeat()
 
-	// Preflight check — ensure required binaries are available before doing any work
 	if err := m.preflight(ctx); err != nil {
 		log.Printf("mind: preflight failed: %v", err)
 		return
 	}
-	if m.preflightFailed {
-		m.preflightFailed = false
-		m.logEvent(ctx, "mind.preflight.restored", map[string]any{}, nil)
-	}
 
-	// Priority order: restart > proposal > tasks > assess
+	// Check any pending authority requests from before restart
 	if m.pendingRestart != "" {
 		m.checkRestart(ctx)
-		return
 	}
-
 	if m.pendingProposal != "" {
 		m.checkProposal(ctx)
-		return
 	}
 
 	m.retryBlockedTasks(ctx)
-
 	m.recoverStaleTasks(ctx)
-
-	if m.checkPendingTasks(ctx) {
-		return // found and started a task
-	}
-
-	// Idle — maybe assess for improvements
-	m.maybeAssess(ctx)
+	m.checkPendingTasks(ctx)
 }
 
 // checkPendingTasks looks for pending tasks and claims the first one.
@@ -642,7 +690,7 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 		invokeCauses = []string{invokeEvent.ID}
 	}
 
-	result, err := InvokeClaude(ctx, m.repoDir, prompt, model)
+	result, err := invokeClaudeFn(ctx, m.repoDir, prompt, model)
 	if err != nil {
 		m.logEvent(ctx, "mind.claude.failed", map[string]any{
 			"task_id": t.ID,
@@ -673,7 +721,7 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 			"task_id": t.ID,
 		}, completedCauses)
 
-		result, err = InvokeClaude(ctx, m.repoDir, retryPrompt, model)
+		result, err = invokeClaudeFn(ctx, m.repoDir, retryPrompt, model)
 		if err != nil || result.ExitCode != 0 {
 			errMsg := "retry failed"
 			if err != nil {
@@ -685,7 +733,7 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 	}
 
 	// Build and test
-	if err := BuildAndTest(ctx, m.repoDir); err != nil {
+	if err := buildAndTestFn(ctx, m.repoDir); err != nil {
 		m.logEvent(ctx, "build.failed", map[string]any{
 			"task_id": t.ID,
 			"error":   truncate(err.Error(), 1000),
@@ -696,7 +744,7 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 
 	// Incremental commit for this subtask
 	commitMsg := fmt.Sprintf("mind: %s", t.Subject)
-	if err := GitCommitAndPush(ctx, m.repoDir, commitMsg); err != nil {
+	if err := gitCommitAndPushFn(ctx, m.repoDir, commitMsg); err != nil {
 		if errors.Is(err, ErrNothingToPush) {
 			// No-op: nothing to commit, continue normally
 		} else {
@@ -799,7 +847,7 @@ func (m *Mind) implementSubtasks(ctx context.Context, parentID string, subtaskID
 func (m *Mind) finishTask(ctx context.Context, t *task.Task, causes []string) {
 	// Final push (in case subtask commits haven't been pushed yet)
 	commitMsg := fmt.Sprintf("mind: %s", t.Subject)
-	if err := GitCommitAndPush(ctx, m.repoDir, commitMsg); err != nil {
+	if err := gitCommitAndPushFn(ctx, m.repoDir, commitMsg); err != nil {
 		if errors.Is(err, ErrNothingToPush) {
 			// No-op: working tree was already clean. Skip commit log event but
 			// still complete the task and restart — work was done.

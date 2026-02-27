@@ -52,7 +52,8 @@ func main() {
 		repoDir = "/data/source"
 	}
 
-	m := mind.New(events, tasks, auth, mindActor.ID, repoDir)
+	bus := eventgraph.NewBus(events)
+	m := mind.New(bus, tasks, auth, mindActor.ID, repoDir)
 
 	// Signal handling
 	go func() {
