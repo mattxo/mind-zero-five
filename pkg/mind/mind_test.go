@@ -2,6 +2,9 @@ package mind
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -464,6 +467,45 @@ func TestRecoverStateSetsFields(t *testing.T) {
 	}
 	if m.pendingProposal != "auth-improve-1" {
 		t.Errorf("pendingProposal: want %q, got %q", "auth-improve-1", m.pendingProposal)
+	}
+}
+
+// TestPreflightAllPresent verifies that preflight returns nil when all required
+// binaries (claude, git, go) are available in PATH.
+func TestPreflightAllPresent(t *testing.T) {
+	dir := t.TempDir()
+	for _, bin := range []string{"claude", "git", "go"} {
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	m := newTestMind(newMockTaskStore())
+	if err := m.preflight(context.Background()); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+}
+
+// TestPreflightMissingBinary verifies that preflight returns an error containing
+// the missing binary's name when it is absent from PATH.
+func TestPreflightMissingBinary(t *testing.T) {
+	dir := t.TempDir()
+	// Provide git and go but omit claude.
+	for _, bin := range []string{"git", "go"} {
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	m := newTestMind(newMockTaskStore())
+	err := m.preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected error for missing binary, got nil")
+	}
+	if !strings.Contains(err.Error(), "claude") {
+		t.Errorf("expected error to contain %q, got %v", "claude", err)
 	}
 }
 
