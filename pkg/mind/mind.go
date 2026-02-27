@@ -191,6 +191,11 @@ func (m *Mind) maintenance(ctx context.Context) {
 
 	m.retryBlockedTasks(ctx)
 	m.recoverStaleTasks(ctx)
+
+	if m.checkPendingTasks(ctx) {
+		return // found and started a task
+	}
+
 	m.maybeAssess(ctx)
 }
 
