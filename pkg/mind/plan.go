@@ -2,6 +2,7 @@ package mind
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -9,6 +10,10 @@ import (
 
 	"mind-zero-five/pkg/task"
 )
+
+// ErrAlreadyDone is returned by Plan when the response indicates the task is
+// already complete and no changes are needed.
+var ErrAlreadyDone = errors.New("task already done")
 
 // SubtaskSpec describes a subtask produced by the planning phase.
 type SubtaskSpec struct {
@@ -61,6 +66,9 @@ func (m *Mind) Plan(ctx context.Context, t *task.Task) ([]SubtaskSpec, error) {
 
 	subtasks := parseSubtasks(result.Result)
 	if len(subtasks) == 0 {
+		if isAlreadyDone(result.Result) {
+			return nil, ErrAlreadyDone
+		}
 		return nil, fmt.Errorf("plan produced no subtasks from response: %s", truncate(result.Result, 500))
 	}
 	if len(subtasks) > 8 {
@@ -73,6 +81,27 @@ func (m *Mind) Plan(ctx context.Context, t *task.Task) ([]SubtaskSpec, error) {
 
 // taskTagRe matches [TASK:subject|description|model] tags.
 var taskTagRe = regexp.MustCompile(`\[TASK:([^|]+)\|([^|]+)\|([^]]+)\]`)
+
+// isAlreadyDone returns true if the response contains completion indicators
+// suggesting the task requires no changes.
+func isAlreadyDone(response string) bool {
+	lower := strings.ToLower(response)
+	indicators := []string{
+		"already done",
+		"already implemented",
+		"no changes needed",
+		"no changes required",
+		"completed",
+		"already exists",
+		"already present",
+	}
+	for _, phrase := range indicators {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
 
 func parseSubtasks(response string) []SubtaskSpec {
 	matches := taskTagRe.FindAllStringSubmatch(response, -1)
