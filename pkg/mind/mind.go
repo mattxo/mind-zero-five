@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os/exec"
+	"strings"
 	"time"
 
 	"mind-zero-five/pkg/authority"
@@ -125,6 +127,22 @@ func (m *Mind) Run(ctx context.Context) {
 	}
 }
 
+// preflight verifies that required binaries (claude, git, go) are available in PATH.
+// Returns an error listing any missing binaries.
+func (m *Mind) preflight() error {
+	required := []string{"claude", "git", "go"}
+	var missing []string
+	for _, bin := range required {
+		if _, err := exec.LookPath(bin); err != nil {
+			missing = append(missing, bin)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required binaries: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // poll checks for work to do: pending tasks or resolved authority requests.
 func (m *Mind) poll(ctx context.Context) {
 	defer func() {
@@ -138,6 +156,15 @@ func (m *Mind) poll(ctx context.Context) {
 
 	// Heartbeat — watchdog checks this file to know we're alive
 	writeHeartbeat()
+
+	// Preflight check — ensure required binaries are available before doing any work
+	if err := m.preflight(); err != nil {
+		log.Printf("mind: preflight failed: %v", err)
+		m.logEvent(ctx, "mind.preflight.failed", map[string]any{
+			"error": err.Error(),
+		}, nil)
+		return
+	}
 
 	// Priority order: restart > proposal > tasks > assess
 	if m.pendingRestart != "" {
