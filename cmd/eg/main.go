@@ -91,29 +91,24 @@ func handleEvent(ctx context.Context, store eventgraph.EventStore, args []string
 	case "list":
 		flags := parseFlags(args[1:])
 		limit := intFlag(flags, "limit", 20)
+		short := flags["format"] == "short"
+		var events []eventgraph.Event
+		var err error
 		if t := flags["type"]; t != "" {
-			events, err := store.ByType(ctx, t, limit)
-			if err != nil {
-				fatal("list by type: %v", err)
-			}
-			printJSON(events)
+			events, err = store.ByType(ctx, t, limit)
 		} else if s := flags["source"]; s != "" {
-			events, err := store.BySource(ctx, s, limit)
-			if err != nil {
-				fatal("list by source: %v", err)
-			}
-			printJSON(events)
+			events, err = store.BySource(ctx, s, limit)
 		} else if c := flags["conversation"]; c != "" {
-			events, err := store.ByConversation(ctx, c, limit)
-			if err != nil {
-				fatal("list by conversation: %v", err)
-			}
-			printJSON(events)
+			events, err = store.ByConversation(ctx, c, limit)
 		} else {
-			events, err := store.Recent(ctx, limit)
-			if err != nil {
-				fatal("list recent: %v", err)
-			}
+			events, err = store.Recent(ctx, limit)
+		}
+		if err != nil {
+			fatal("list events: %v", err)
+		}
+		if short {
+			printShortEvents(events)
+		} else {
 			printJSON(events)
 		}
 
@@ -153,7 +148,7 @@ func handleEvent(ctx context.Context, store eventgraph.EventStore, args []string
 
 	case "search":
 		if len(args) < 2 {
-			fatal("Usage: eg event search <query> [--limit=N]")
+			fatal("Usage: eg event search <query> [--limit=N] [--format=short]")
 		}
 		flags := parseFlags(args[2:])
 		limit := intFlag(flags, "limit", 20)
@@ -161,7 +156,11 @@ func handleEvent(ctx context.Context, store eventgraph.EventStore, args []string
 		if err != nil {
 			fatal("search: %v", err)
 		}
-		printJSON(events)
+		if flags["format"] == "short" {
+			printShortEvents(events)
+		} else {
+			printJSON(events)
+		}
 
 	case "types":
 		types, err := store.DistinctTypes(ctx)
