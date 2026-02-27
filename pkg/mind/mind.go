@@ -500,6 +500,15 @@ func (m *Mind) executeTask(ctx context.Context, t *task.Task, causeEvent *eventg
 
 	subtaskSpecs, err := m.Plan(ctx, t)
 	if err != nil {
+		if errors.Is(err, ErrAlreadyDone) {
+			log.Printf("mind: task %s already done, auto-completing", t.ID)
+			m.logEvent(ctx, "mind.plan.already_done", map[string]any{
+				"task_id": t.ID,
+				"subject": t.Subject,
+			}, causes)
+			m.finishTask(ctx, t, causes)
+			return
+		}
 		log.Printf("mind: plan failed for task %s: %v", t.ID, err)
 		// Fall back to direct execution (single-shot, like before)
 		m.logEvent(ctx, "mind.plan.failed", map[string]any{
