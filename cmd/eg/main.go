@@ -56,7 +56,7 @@ func main() {
 
 func handleEvent(ctx context.Context, store eventgraph.EventStore, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: eg event <create|list|get|ancestors|descendants|search|types|sources|verify>")
+		fmt.Fprintln(os.Stderr, "Usage: eg event <create|list|get|ancestors|descendants|search|types|sources|verify> [--format=short for list/search]")
 		os.Exit(1)
 	}
 
@@ -190,7 +190,7 @@ func handleEvent(ctx context.Context, store eventgraph.EventStore, args []string
 
 func handleTask(ctx context.Context, store task.Store, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: eg task <create|list|get|update|complete>")
+		fmt.Fprintln(os.Stderr, "Usage: eg task <create|list|get|update|complete> [--format=short for list]")
 		os.Exit(1)
 	}
 
@@ -225,7 +225,11 @@ func handleTask(ctx context.Context, store task.Store, args []string) {
 		if err != nil {
 			fatal("list tasks: %v", err)
 		}
-		printJSON(tasks)
+		if flags["format"] == "short" {
+			printShortTasks(tasks)
+		} else {
+			printJSON(tasks)
+		}
 
 	case "get":
 		if len(args) < 2 {
