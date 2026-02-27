@@ -339,6 +339,113 @@ func TestRetryBlockedTasksTooRecent(t *testing.T) {
 	}
 }
 
+// TestRecoverStaleTasksResetsStale verifies that an in_progress task assigned to
+// mind that is older than 30 minutes is reset to pending with an event.
+func TestRecoverStaleTasksResetsStale(t *testing.T) {
+	ts := newMockTaskStore()
+	stale := time.Now().Add(-45 * time.Minute)
+	addTask(ts, "ts1", "in_progress", "mind", stale, map[string]any{"key": "val"})
+
+	m := newTestMind(ts)
+	m.recoverStaleTasks(context.Background())
+
+	stored := ts.tasks["ts1"]
+	if stored.Status != "pending" {
+		t.Errorf("status: want pending, got %q", stored.Status)
+	}
+	if stored.Assignee != "" {
+		t.Errorf("assignee: want empty, got %q", stored.Assignee)
+	}
+	// existing metadata key must be preserved
+	if stored.Metadata == nil {
+		t.Fatal("expected non-nil metadata")
+	}
+	if stored.Metadata["key"] != "val" {
+		t.Errorf("metadata key: want %q, got %v", "val", stored.Metadata["key"])
+	}
+	// prev_failure_reason must be set
+	pfr, _ := stored.Metadata["prev_failure_reason"].(string)
+	if pfr == "" {
+		t.Error("expected prev_failure_reason to be set")
+	}
+}
+
+// TestRecoverStaleTasksLeavesRecent verifies that an in_progress task updated
+// fewer than 30 minutes ago is left alone.
+func TestRecoverStaleTasksLeavesRecent(t *testing.T) {
+	ts := newMockTaskStore()
+	recent := time.Now().Add(-10 * time.Minute)
+	addTask(ts, "ts2", "in_progress", "mind", recent, nil)
+
+	m := newTestMind(ts)
+	m.recoverStaleTasks(context.Background())
+
+	stored := ts.tasks["ts2"]
+	if stored.Status != "in_progress" {
+		t.Errorf("status: want in_progress (unchanged), got %q", stored.Status)
+	}
+}
+
+// TestRecoverStaleTasksSkipsOtherAssignees verifies that in_progress tasks
+// assigned to someone other than the mind are not touched.
+func TestRecoverStaleTasksSkipsOtherAssignees(t *testing.T) {
+	ts := newMockTaskStore()
+	stale := time.Now().Add(-60 * time.Minute)
+	addTask(ts, "ts3", "in_progress", "human", stale, nil)
+
+	m := newTestMind(ts)
+	m.recoverStaleTasks(context.Background())
+
+	stored := ts.tasks["ts3"]
+	if stored.Status != "in_progress" {
+		t.Errorf("status: want in_progress (unchanged), got %q", stored.Status)
+	}
+	if stored.Assignee != "human" {
+		t.Errorf("assignee: want human (unchanged), got %q", stored.Assignee)
+	}
+}
+
+// TestRecoverStaleTasksPreservesMetadata verifies that all existing metadata
+// fields are preserved and prev_failure_reason is set on recovery.
+func TestRecoverStaleTasksPreservesMetadata(t *testing.T) {
+	ts := newMockTaskStore()
+	stale := time.Now().Add(-35 * time.Minute)
+	addTask(ts, "ts4", "in_progress", "mind", stale, map[string]any{
+		"custom_key":  "custom_val",
+		"retry_count": 1,
+	})
+
+	m := newTestMind(ts)
+	m.recoverStaleTasks(context.Background())
+
+	stored := ts.tasks["ts4"]
+	if stored.Status != "pending" {
+		t.Fatalf("status: want pending, got %q", stored.Status)
+	}
+	if stored.Metadata == nil {
+		t.Fatal("expected non-nil metadata")
+	}
+	if stored.Metadata["custom_key"] != "custom_val" {
+		t.Errorf("custom_key: want %q, got %v", "custom_val", stored.Metadata["custom_key"])
+	}
+	var rc int
+	switch v := stored.Metadata["retry_count"].(type) {
+	case int:
+		rc = v
+	case float64:
+		rc = int(v)
+	default:
+		t.Errorf("retry_count unexpected type %T", stored.Metadata["retry_count"])
+	}
+	if rc != 1 {
+		t.Errorf("retry_count: want 1 (preserved), got %d", rc)
+	}
+	pfr, _ := stored.Metadata["prev_failure_reason"].(string)
+	if pfr == "" {
+		t.Error("expected prev_failure_reason to be set")
+	}
+}
+
 // TestRecoverStateSetsFields verifies that recoverState rehydrates pendingRestart
 // and pendingProposal from pending authority requests where source=mind.
 func TestRecoverStateSetsFields(t *testing.T) {
