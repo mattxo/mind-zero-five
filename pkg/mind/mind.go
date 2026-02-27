@@ -152,6 +152,8 @@ func (m *Mind) poll(ctx context.Context) {
 
 	m.retryBlockedTasks(ctx)
 
+	m.recoverStaleTasks(ctx)
+
 	if m.checkPendingTasks(ctx) {
 		return // found and started a task
 	}
