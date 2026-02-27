@@ -4,6 +4,7 @@ package mind
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,11 @@ import (
 	"strings"
 	"syscall"
 )
+
+// ErrNothingToPush is returned by GitCommitAndPush when the working tree is
+// clean and git push confirms the remote is already up-to-date. This is a
+// harmless no-op; callers can distinguish it from a real push failure.
+var ErrNothingToPush = errors.New("nothing to push: working tree clean and remote up-to-date")
 
 // goCmd creates an exec.Cmd for the go tool with PATH set correctly.
 func goCmd(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
@@ -27,6 +33,50 @@ func goCmd(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// CleanWorkingTree checks for uncommitted changes left by a crash and commits them
+// separately as orphaned recovery. Returns the list of files that were dirty, or nil
+// if the tree was clean. This prevents cross-task contamination from git add -A
+// sweeping orphaned files into the next task's commit.
+func CleanWorkingTree(ctx context.Context, repoDir string) ([]string, error) {
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd.Dir = repoDir
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git status --porcelain: %w", err)
+	}
+
+	output := strings.TrimSpace(string(statusOut))
+	if output == "" {
+		return nil, nil // clean
+	}
+
+	// Collect dirty file paths for logging
+	var files []string
+	for _, line := range strings.Split(output, "\n") {
+		if len(line) > 3 {
+			files = append(files, strings.TrimSpace(line[2:]))
+		}
+	}
+
+	log.Printf("mind: cleanWorkingTree: %d orphaned files from crash recovery", len(files))
+
+	// Commit orphaned changes under a clear label
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"commit", "-m", "mind: orphaned changes from crash recovery"},
+		{"push", "origin", "main"},
+	} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return files, fmt.Errorf("git %v: %w\n%s", args, err, string(out))
+		}
+	}
+
+	return files, nil
+}
+
 // GitCommitAndPush stages all changes, commits with the given message, and pushes.
 // If the working tree is clean (nothing to commit), it skips add/commit but still
 // pushes to ensure any prior unpushed commits reach the remote.
@@ -40,7 +90,9 @@ func GitCommitAndPush(ctx context.Context, repoDir, message string) error {
 		return fmt.Errorf("git status --porcelain: %w", err)
 	}
 
-	if len(strings.TrimSpace(string(statusOut))) > 0 {
+	treeClean := len(strings.TrimSpace(string(statusOut))) == 0
+
+	if !treeClean {
 		// Stage and commit
 		for _, args := range [][]string{
 			{"add", "-A"},
@@ -61,6 +113,11 @@ func GitCommitAndPush(ctx context.Context, repoDir, message string) error {
 	pushOut, err := pushCmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git push origin main: %w\n%s", err, string(pushOut))
+	}
+
+	// If the tree was clean and push transferred nothing, this was a true no-op.
+	if treeClean && strings.Contains(string(pushOut), "Everything up-to-date") {
+		return ErrNothingToPush
 	}
 	return nil
 }

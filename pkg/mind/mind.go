@@ -49,8 +49,24 @@ func New(events eventgraph.EventStore, tasks task.Store, auth authority.Store, a
 }
 
 // recoverState rehydrates in-memory state from pending authority requests on startup.
-// This ensures that if the mind restarts while waiting for approval, it resumes correctly.
+// It also cleans any orphaned file changes left by a crash, preventing cross-task contamination.
 func (m *Mind) recoverState(ctx context.Context) {
+	// Clean orphaned changes before anything else — prevents git add -A from
+	// sweeping crash leftovers into the next task's commit.
+	if files, err := CleanWorkingTree(ctx, m.repoDir); err != nil {
+		log.Printf("mind: cleanWorkingTree: %v", err)
+		m.logEvent(ctx, "mind.recovery.dirty_tree_failed", map[string]any{
+			"error": err.Error(),
+			"files": files,
+		}, nil)
+	} else if len(files) > 0 {
+		log.Printf("mind: committed %d orphaned files from crash recovery", len(files))
+		m.logEvent(ctx, "mind.recovery.dirty_tree_cleaned", map[string]any{
+			"file_count": len(files),
+			"files":      files,
+		}, nil)
+	}
+
 	pending, err := m.auth.Pending(ctx)
 	if err != nil {
 		log.Printf("mind: recoverState: list pending authority: %v", err)
