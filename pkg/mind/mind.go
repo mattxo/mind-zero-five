@@ -849,8 +849,9 @@ func (m *Mind) finishTask(ctx context.Context, t *task.Task, causes []string) {
 		deployCauses = []string{deployEvent.ID}
 	}
 
-	// Request authority to restart — policy determines if self-approved or needs human
-	m.requestRestart(ctx, t, deployCauses)
+	// Skip restart — run single-threaded. New binaries take effect on next
+	// container restart. This prevents the restart→orphan→stale recovery loop.
+	log.Printf("mind: task %s completed, new binaries built (restart skipped)", t.ID)
 }
 
 func (m *Mind) requestRestart(ctx context.Context, t *task.Task, causes []string) {
