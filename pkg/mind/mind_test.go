@@ -104,6 +104,17 @@ func (s *mockTaskStore) EnsureTable(_ context.Context) error         { return ni
 
 type mockEventStore struct{}
 
+// trackingEventStore wraps mockEventStore and records the type of every appended event.
+type trackingEventStore struct {
+	mockEventStore
+	emitted []string
+}
+
+func (s *trackingEventStore) Append(_ context.Context, eventType, source string, content map[string]any, causes []string, conversationID string) (*eventgraph.Event, error) {
+	s.emitted = append(s.emitted, eventType)
+	return &eventgraph.Event{ID: "evt-1", Type: eventType}, nil
+}
+
 func (s *mockEventStore) Append(_ context.Context, eventType, source string, content map[string]any, causes []string, conversationID string) (*eventgraph.Event, error) {
 	return &eventgraph.Event{ID: "evt-1", Type: eventType}, nil
 }
@@ -500,6 +511,9 @@ func TestPreflightAllPresent(t *testing.T) {
 	if err := m.preflight(context.Background()); err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
+	if m.preflightFailed {
+		t.Error("expected preflightFailed=false when all binaries are available")
+	}
 }
 
 // TestPreflightMissingBinary verifies that preflight returns an error containing
@@ -521,6 +535,9 @@ func TestPreflightMissingBinary(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "claude") {
 		t.Errorf("expected error to contain %q, got %v", "claude", err)
+	}
+	if !m.preflightFailed {
+		t.Error("expected preflightFailed=true after first missing-binary failure")
 	}
 }
 
@@ -561,6 +578,84 @@ func TestPreflightRestored(t *testing.T) {
 	}
 	if !m.preflightFailed {
 		t.Error("expected preflightFailed=true so caller can emit restored event")
+	}
+}
+
+// TestPreflightDebounce verifies that a second preflight call while preflightFailed
+// is already true does not re-emit a mind.preflight.failed event (state already known).
+func TestPreflightDebounce(t *testing.T) {
+	dir := t.TempDir()
+	// Provide git and go but omit claude.
+	for _, bin := range []string{"git", "go"} {
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	tracker := &trackingEventStore{}
+	m := &Mind{
+		events:         tracker,
+		tasks:          newMockTaskStore(),
+		auth:           &mockAuthStore{},
+		actorID:        "mind",
+		repoDir:        "/tmp",
+		assessInterval: 5 * time.Minute,
+	}
+
+	countFailed := func() int {
+		n := 0
+		for _, e := range tracker.emitted {
+			if e == "mind.preflight.failed" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// First failure: state transitions false→true, event emitted once.
+	if err := m.preflight(context.Background()); err == nil {
+		t.Fatal("expected error for missing claude, got nil")
+	}
+	if n := countFailed(); n != 1 {
+		t.Fatalf("after first failure: want 1 mind.preflight.failed event, got %d", n)
+	}
+
+	// Second failure: preflightFailed already true — no new event should be emitted.
+	if err := m.preflight(context.Background()); err == nil {
+		t.Fatal("expected error on second call for missing claude, got nil")
+	}
+	if n := countFailed(); n != 1 {
+		t.Fatalf("after second failure (debounce): want still 1 mind.preflight.failed event, got %d", n)
+	}
+}
+
+// TestPreflightRestoredInMaintenance verifies that when maintenance runs and preflight
+// succeeds after a prior failure, preflightFailed is reset to false by the caller.
+func TestPreflightRestoredInMaintenance(t *testing.T) {
+	dir := t.TempDir()
+	for _, bin := range []string{"claude", "git", "go"} {
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	m := &Mind{
+		events:          &mockEventStore{},
+		tasks:           newMockTaskStore(),
+		auth:            &mockAuthStore{},
+		actorID:         "mind",
+		repoDir:         "/tmp",
+		assessInterval:  5 * time.Minute,
+		preflightFailed: true,       // simulate a prior failure
+		lastAssessment:  time.Now(), // prevent assessment from running
+	}
+
+	m.maintenance(context.Background())
+
+	if m.preflightFailed {
+		t.Error("expected preflightFailed=false after maintenance detects all binaries restored")
 	}
 }
 
