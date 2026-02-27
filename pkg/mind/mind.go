@@ -594,17 +594,18 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 	// Incremental commit for this subtask
 	commitMsg := fmt.Sprintf("mind: %s", t.Subject)
 	if err := GitCommitAndPush(ctx, m.repoDir, commitMsg); err != nil {
-		log.Printf("mind: git commit for subtask %s: %v", t.ID, err)
+		log.Printf("mind: git commit/push for subtask %s: %v", t.ID, err)
 		m.logEvent(ctx, "git.commit_push.failed", map[string]any{
 			"task_id": t.ID,
 			"error":   truncate(err.Error(), 500),
 		}, completedCauses)
-	} else {
-		m.logEvent(ctx, "code.committed", map[string]any{
-			"task_id": t.ID,
-			"message": commitMsg,
-		}, completedCauses)
+		m.markBlocked(ctx, t.ID, "git push failed — unpushed work at risk: "+truncate(err.Error(), 200), completedCauses)
+		return
 	}
+	m.logEvent(ctx, "code.committed", map[string]any{
+		"task_id": t.ID,
+		"message": commitMsg,
+	}, completedCauses)
 
 	// Complete the subtask
 	if _, err := m.tasks.Complete(ctx, t.ID); err != nil {
@@ -696,12 +697,14 @@ func (m *Mind) finishTask(ctx context.Context, t *task.Task, causes []string) {
 			"task_id": t.ID,
 			"error":   truncate(err.Error(), 500),
 		}, causes)
-	} else {
-		m.logEvent(ctx, "code.committed", map[string]any{
-			"task_id": t.ID,
-			"message": commitMsg,
-		}, causes)
+		// Block — do NOT complete or restart. Unpushed work dies on restart.
+		m.markBlocked(ctx, t.ID, "git push failed — unpushed work at risk: "+truncate(err.Error(), 200), causes)
+		return
 	}
+	m.logEvent(ctx, "code.committed", map[string]any{
+		"task_id": t.ID,
+		"message": commitMsg,
+	}, causes)
 
 	// Complete the task
 	if _, err := m.tasks.Complete(ctx, t.ID); err != nil {

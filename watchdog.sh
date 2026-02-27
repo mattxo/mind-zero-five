@@ -2,7 +2,7 @@
 # watchdog.sh — External process monitor for the mind.
 #
 # Does NOT depend on Go, Claude, Postgres, or the mind itself.
-# Uses only: pidof, kill, stat, git, go build, cp, date, sleep.
+# Uses only: pgrep, kill, stat, git, go build, cp, date, sleep.
 #
 # Responsibilities:
 # 1. Restart mind if the process dies
@@ -85,27 +85,9 @@ revert_and_rebuild() {
 }
 
 start_mind() {
-    # Don't start if already running
-    if pidof mind >/dev/null 2>&1; then
-        return
-    fi
     backup_binary
     "$MIND_BIN" &
     log "started mind (pid=$!)"
-}
-
-kill_mind() {
-    local pids
-    pids=$(pidof mind 2>/dev/null)
-    if [ -n "$pids" ]; then
-        kill $pids 2>/dev/null
-        sleep 2
-        # Force kill any survivors
-        pids=$(pidof mind 2>/dev/null)
-        if [ -n "$pids" ]; then
-            kill -9 $pids 2>/dev/null
-        fi
-    fi
 }
 
 # --- Main loop ---
@@ -117,7 +99,9 @@ log "started (check_interval=${CHECK_INTERVAL}s, heartbeat_max=${HEARTBEAT_MAX_A
 while true; do
     sleep "$CHECK_INTERVAL"
 
-    if ! pidof mind >/dev/null 2>&1; then
+    mind_pid=$(pgrep -x mind)
+
+    if [ -z "$mind_pid" ]; then
         # Mind is dead
         log "mind process not found"
         record_crash
@@ -137,8 +121,10 @@ while true; do
         heartbeat_age=$(( $(date +%s) - $(stat -c %Y "$HEARTBEAT" 2>/dev/null || echo 0) ))
 
         if [ "$heartbeat_age" -gt "$HEARTBEAT_MAX_AGE" ]; then
-            log "mind stuck — no heartbeat for ${heartbeat_age}s, killing"
-            kill_mind
+            log "mind stuck — no heartbeat for ${heartbeat_age}s (pid=$mind_pid), killing"
+            kill "$mind_pid" 2>/dev/null
+            sleep 2
+            kill -9 "$mind_pid" 2>/dev/null
             record_crash
 
             crashes=$(recent_crash_count)

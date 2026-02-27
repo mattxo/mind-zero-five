@@ -28,22 +28,39 @@ func goCmd(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
 }
 
 // GitCommitAndPush stages all changes, commits with the given message, and pushes.
+// If the working tree is clean (nothing to commit), it skips add/commit but still
+// pushes to ensure any prior unpushed commits reach the remote.
+// Returns nil on success (including clean no-op). Real errors mean data is at risk.
 func GitCommitAndPush(ctx context.Context, repoDir, message string) error {
-	cmds := []struct {
-		name string
-		args []string
-	}{
-		{"git", []string{"add", "-A"}},
-		{"git", []string{"commit", "-m", message}},
-		{"git", []string{"push", "origin", "main"}},
+	// Check if there's anything to commit
+	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	statusCmd.Dir = repoDir
+	statusOut, err := statusCmd.Output()
+	if err != nil {
+		return fmt.Errorf("git status --porcelain: %w", err)
 	}
-	for _, c := range cmds {
-		cmd := exec.CommandContext(ctx, c.name, c.args...)
-		cmd.Dir = repoDir
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s %v: %w\n%s", c.name, c.args, err, string(out))
+
+	if len(strings.TrimSpace(string(statusOut))) > 0 {
+		// Stage and commit
+		for _, args := range [][]string{
+			{"add", "-A"},
+			{"commit", "-m", message},
+		} {
+			cmd := exec.CommandContext(ctx, "git", args...)
+			cmd.Dir = repoDir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("git %v: %w\n%s", args, err, string(out))
+			}
 		}
+	}
+
+	// Always push — there may be unpushed commits from earlier subtasks
+	pushCmd := exec.CommandContext(ctx, "git", "push", "origin", "main")
+	pushCmd.Dir = repoDir
+	pushOut, err := pushCmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git push origin main: %w\n%s", err, string(pushOut))
 	}
 	return nil
 }
