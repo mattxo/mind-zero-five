@@ -524,6 +524,46 @@ func TestPreflightMissingBinary(t *testing.T) {
 	}
 }
 
+// TestPreflightRestored verifies the recovery scenario: after a preflight failure
+// sets preflightFailed=true, a subsequent successful preflight returns nil and
+// leaves preflightFailed=true so the caller can emit mind.preflight.restored.
+func TestPreflightRestored(t *testing.T) {
+	dir := t.TempDir()
+	// Start with only git and go — no claude.
+	for _, bin := range []string{"git", "go"} {
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!/bin/sh\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+
+	m := newTestMind(newMockTaskStore())
+
+	// First call: should fail and set preflightFailed.
+	err := m.preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected error for missing claude, got nil")
+	}
+	if !m.preflightFailed {
+		t.Fatal("expected preflightFailed=true after first failure")
+	}
+
+	// Restore the missing binary.
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second call: should succeed. preflight() does not reset preflightFailed —
+	// the caller is responsible for emitting mind.preflight.restored and clearing it.
+	err = m.preflight(context.Background())
+	if err != nil {
+		t.Errorf("expected nil after binary restored, got %v", err)
+	}
+	if !m.preflightFailed {
+		t.Error("expected preflightFailed=true so caller can emit restored event")
+	}
+}
+
 // TestRecoverStateNoMatch verifies that recoverState is a no-op when there are
 // no pending authority requests with source=mind.
 func TestRecoverStateNoMatch(t *testing.T) {
