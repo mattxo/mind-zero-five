@@ -97,6 +97,27 @@ fi
 
 echo "entrypoint: source=$SOURCE_DATA, claude=$CLAUDE_DATA, ssh=$SSH_DATA"
 
+# --- Ensure go is in PATH for mind's preflight check ---
+ln -sf /usr/local/go/bin/go /usr/local/bin/go 2>/dev/null || true
+
+# --- Build from /data/source if newer than installed binaries ---
+# The persistent volume has the latest code; Docker image binaries may be stale.
+if [ -f "$SOURCE_DATA/go.mod" ]; then
+    SOURCE_MOD=$(stat -c %Y "$SOURCE_DATA/go.mod" 2>/dev/null || echo 0)
+    SERVER_MOD=$(stat -c %Y /usr/local/bin/server 2>/dev/null || echo 0)
+    if [ "$SOURCE_MOD" -gt "$SERVER_MOD" ]; then
+        echo "entrypoint: source is newer than binaries, rebuilding..."
+        cd "$SOURCE_DATA"
+        if /usr/local/go/bin/go build -o /usr/local/bin/server ./cmd/server && \
+           /usr/local/go/bin/go build -o /usr/local/bin/mind ./cmd/mind && \
+           /usr/local/go/bin/go build -o /usr/local/bin/eg ./cmd/eg; then
+            echo "entrypoint: rebuild complete"
+        else
+            echo "entrypoint: rebuild failed, using Docker image binaries"
+        fi
+    fi
+fi
+
 # --- Start server (mind runs in-process) ---
 # Server and mind share the same process and event bus.
 # No separate mind process or watchdog needed.
