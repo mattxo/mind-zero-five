@@ -333,6 +333,9 @@ func (m *Mind) checkRestart(ctx context.Context) {
 
 // maybeAssess runs a self-assessment if enough time has passed since the last one.
 func (m *Mind) maybeAssess(ctx context.Context) {
+	if m.pendingProposal != "" {
+		return
+	}
 	if time.Since(m.lastAssessment) < m.assessInterval {
 		return
 	}
