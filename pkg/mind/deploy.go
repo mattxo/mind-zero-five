@@ -19,6 +19,24 @@ import (
 // harmless no-op; callers can distinguish it from a real push failure.
 var ErrNothingToPush = errors.New("nothing to push: working tree clean and remote up-to-date")
 
+// requiredBinaries are the external commands the mind depends on at runtime.
+var requiredBinaries = []string{"claude", "git"}
+
+// Preflight checks that all required external binaries are available in PATH.
+// Returns an error listing any missing binaries.
+func Preflight() error {
+	var missing []string
+	for _, bin := range requiredBinaries {
+		if _, err := exec.LookPath(bin); err != nil {
+			missing = append(missing, bin)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required binaries: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // goCmd creates an exec.Cmd for the go tool with PATH set correctly.
 func goCmd(ctx context.Context, repoDir string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "/usr/local/go/bin/go", args...)
