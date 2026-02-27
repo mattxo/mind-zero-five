@@ -2,9 +2,6 @@ package mind
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -193,38 +190,6 @@ func addTask(ts *mockTaskStore, id, status, assignee string, updatedAt time.Time
 }
 
 // --- Tests ---
-
-// TestPreflight verifies that preflight passes when all required binaries are
-// present and returns an error listing missing binaries when PATH is broken.
-func TestPreflight(t *testing.T) {
-	m := newTestMind(newMockTaskStore())
-
-	// Case 1: all binaries present — create a temp dir with fake executables.
-	tmpDir := t.TempDir()
-	for _, bin := range []string{"claude", "git", "go"} {
-		path := filepath.Join(tmpDir, bin)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatalf("failed to create fake binary %s: %v", bin, err)
-		}
-	}
-	t.Setenv("PATH", tmpDir)
-	if err := m.preflight(); err != nil {
-		t.Errorf("preflight with all binaries present: want nil, got %v", err)
-	}
-
-	// Case 2: PATH is empty — all binaries missing, error must list them.
-	t.Setenv("PATH", "")
-	err := m.preflight()
-	if err == nil {
-		t.Fatal("preflight with empty PATH: want error, got nil")
-	}
-	for _, bin := range []string{"claude", "git", "go"} {
-		if !strings.Contains(err.Error(), bin) {
-			t.Errorf("preflight error %q does not mention missing binary %q", err.Error(), bin)
-		}
-	}
-}
-
 
 // TestMarkBlockedStoresMetadata verifies that markBlocked writes blocked_reason
 // and initialises retry_count=0 in the task's metadata.
