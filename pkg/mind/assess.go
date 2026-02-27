@@ -252,6 +252,9 @@ func (m *Mind) diagErrorPatterns(ctx context.Context, sb *strings.Builder) {
 		"mind.assess.failed",
 		"deploy.failed",
 		"build.deploy.failed",
+		"mind.recovery.failed",
+		"mind.recovery.succeeded",
+		"mind.error",
 	}
 
 	found := false

@@ -71,6 +71,10 @@ func (m *Mind) recoverState(ctx context.Context) {
 	pending, err := m.auth.Pending(ctx)
 	if err != nil {
 		log.Printf("mind: recoverState: list pending authority: %v", err)
+		m.logEvent(ctx, "mind.error", map[string]any{
+			"operation": "recoverState.list_pending",
+			"error":     err.Error(),
+		}, nil)
 		return
 	}
 
@@ -162,6 +166,10 @@ func (m *Mind) checkPendingTasks(ctx context.Context) bool {
 	tasks, err := m.tasks.List(ctx, "pending", 10)
 	if err != nil {
 		log.Printf("mind: poll pending tasks: %v", err)
+		m.logEvent(ctx, "mind.error", map[string]any{
+			"operation": "checkPendingTasks",
+			"error":     err.Error(),
+		}, nil)
 		return false
 	}
 
@@ -205,6 +213,11 @@ func (m *Mind) checkRestart(ctx context.Context) {
 	req, err := m.auth.Get(ctx, m.pendingRestart)
 	if err != nil {
 		log.Printf("mind: check restart authority %s: %v", m.pendingRestart, err)
+		m.logEvent(ctx, "mind.error", map[string]any{
+			"operation":    "checkRestart",
+			"authority_id": m.pendingRestart,
+			"error":        err.Error(),
+		}, nil)
 		m.pendingRestart = ""
 		return
 	}
@@ -265,7 +278,7 @@ func (m *Mind) maybeAssess(ctx context.Context) {
 	proposalJSON, _ := json.Marshal(proposal)
 	req, err := m.auth.Create(ctx, "self-improve",
 		string(proposalJSON),
-		"mind", authority.Required)
+		"mind", authority.Recommended)
 	if err != nil {
 		log.Printf("mind: create self-improve authority: %v", err)
 		return
@@ -286,12 +299,32 @@ func (m *Mind) checkProposal(ctx context.Context) {
 	req, err := m.auth.Get(ctx, m.pendingProposal)
 	if err != nil {
 		log.Printf("mind: check proposal authority %s: %v", m.pendingProposal, err)
+		m.logEvent(ctx, "mind.error", map[string]any{
+			"operation":    "checkProposal",
+			"authority_id": m.pendingProposal,
+			"error":        err.Error(),
+		}, nil)
 		m.pendingProposal = ""
 		return
 	}
 
 	if req.Status == "pending" {
-		return // still waiting for Matt
+		// Auto-approve Recommended requests after timeout (15 min).
+		if req.Level == authority.Recommended && time.Since(req.CreatedAt) >= authority.RecommendedTimeout {
+			if _, err := m.auth.Resolve(ctx, req.ID, true); err != nil {
+				log.Printf("mind: auto-approve proposal %s: %v", req.ID, err)
+				return
+			}
+			log.Printf("mind: auto-approved proposal %s after %s", req.ID, authority.RecommendedTimeout)
+			m.logEvent(ctx, "authority.auto_approved", map[string]any{
+				"authority_id": req.ID,
+				"action":       "self-improve",
+				"timeout":      authority.RecommendedTimeout.String(),
+			}, nil)
+			req.Status = "approved" // fall through to approved handling
+		} else {
+			return // still within approval window
+		}
 	}
 
 	if req.Status == "approved" {
@@ -301,6 +334,11 @@ func (m *Mind) checkProposal(ctx context.Context) {
 		var proposal Proposal
 		if err := json.Unmarshal([]byte(req.Description), &proposal); err != nil {
 			log.Printf("mind: parse proposal from authority %s: %v", req.ID, err)
+			m.logEvent(ctx, "mind.error", map[string]any{
+				"operation":    "checkProposal.parse",
+				"authority_id": req.ID,
+				"error":        err.Error(),
+			}, nil)
 			m.pendingProposal = ""
 			return
 		}
@@ -318,6 +356,11 @@ func (m *Mind) checkProposal(ctx context.Context) {
 		})
 		if err != nil {
 			log.Printf("mind: create improvement task: %v", err)
+			m.logEvent(ctx, "mind.error", map[string]any{
+				"operation":    "checkProposal.create_task",
+				"authority_id": req.ID,
+				"error":        err.Error(),
+			}, nil)
 			m.pendingProposal = ""
 			return
 		}
@@ -477,7 +520,7 @@ func (m *Mind) executeDirectly(ctx context.Context, t *task.Task, causes []strin
 			"task_id": t.ID,
 			"error":   err.Error(),
 		}, invokeCauses)
-		m.markBlocked(ctx, t.ID, "claude invocation failed: "+err.Error(), invokeCauses)
+		m.handleFailure(ctx, t, "mind.claude.failed", "claude invocation failed: "+err.Error(), invokeCauses)
 		return
 	}
 
@@ -494,7 +537,7 @@ func (m *Mind) executeDirectly(ctx context.Context, t *task.Task, causes []strin
 	}
 
 	if result.ExitCode != 0 {
-		m.markBlocked(ctx, t.ID, fmt.Sprintf("claude failed (exit %d)", result.ExitCode), completedCauses)
+		m.handleFailure(ctx, t, "mind.claude.failed", fmt.Sprintf("claude failed (exit %d)", result.ExitCode), completedCauses)
 		return
 	}
 
@@ -503,7 +546,7 @@ func (m *Mind) executeDirectly(ctx context.Context, t *task.Task, causes []strin
 			"task_id": t.ID,
 			"error":   truncate(err.Error(), 1000),
 		}, completedCauses)
-		m.markBlocked(ctx, t.ID, "build/test failed: "+truncate(err.Error(), 200), completedCauses)
+		m.handleFailure(ctx, t, "build.failed", "build/test failed: "+truncate(err.Error(), 200), completedCauses)
 		return
 	}
 
@@ -562,7 +605,7 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 			"task_id": t.ID,
 			"error":   err.Error(),
 		}, invokeCauses)
-		m.markBlocked(ctx, t.ID, "claude failed: "+err.Error(), invokeCauses)
+		m.handleFailure(ctx, t, "mind.claude.failed", "claude failed: "+err.Error(), invokeCauses)
 		return
 	}
 
@@ -593,7 +636,7 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 			if err != nil {
 				errMsg = err.Error()
 			}
-			m.markBlocked(ctx, t.ID, errMsg, completedCauses)
+			m.handleFailure(ctx, t, "mind.claude.failed", errMsg, completedCauses)
 			return
 		}
 	}
@@ -604,7 +647,7 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 			"task_id": t.ID,
 			"error":   truncate(err.Error(), 1000),
 		}, completedCauses)
-		m.markBlocked(ctx, t.ID, "build/test failed: "+truncate(err.Error(), 200), completedCauses)
+		m.handleFailure(ctx, t, "build.failed", "build/test failed: "+truncate(err.Error(), 200), completedCauses)
 		return
 	}
 
@@ -616,7 +659,7 @@ func (m *Mind) executeSubtask(ctx context.Context, t *task.Task, causeEvent *eve
 			"task_id": t.ID,
 			"error":   truncate(err.Error(), 500),
 		}, completedCauses)
-		m.markBlocked(ctx, t.ID, "git push failed — unpushed work at risk: "+truncate(err.Error(), 200), completedCauses)
+		m.handleFailure(ctx, t, "git.commit_push.failed", "git push failed — unpushed work at risk: "+truncate(err.Error(), 200), completedCauses)
 		return
 	}
 	m.logEvent(ctx, "code.committed", map[string]any{
@@ -720,7 +763,7 @@ func (m *Mind) finishTask(ctx context.Context, t *task.Task, causes []string) {
 				"error":   truncate(err.Error(), 500),
 			}, causes)
 			// Block — do NOT complete or restart. Unpushed work dies on restart.
-			m.markBlocked(ctx, t.ID, "git push failed — unpushed work at risk: "+truncate(err.Error(), 200), causes)
+			m.handleFailure(ctx, t, "git.commit_push.failed", "git push failed — unpushed work at risk: "+truncate(err.Error(), 200), causes)
 			return
 		}
 	} else {
@@ -844,6 +887,11 @@ func (m *Mind) markBlocked(ctx context.Context, taskID, reason string, causes []
 		"metadata": meta,
 	}); err != nil {
 		log.Printf("mind: mark task %s blocked: %v", taskID, err)
+		m.logEvent(ctx, "mind.error", map[string]any{
+			"operation": "markBlocked",
+			"task_id":   taskID,
+			"error":     err.Error(),
+		}, causes)
 	}
 	m.logEvent(ctx, "task.blocked", map[string]any{
 		"task_id": taskID,

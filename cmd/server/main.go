@@ -60,6 +60,9 @@ func main() {
 	if _, err := auth.CreatePolicy(ctx, "restart", mindActor.ID, authority.Notification); err != nil {
 		log.Fatalf("seed restart policy: %v", err)
 	}
+	if _, err := auth.CreatePolicy(ctx, "self-improve", mindActor.ID, authority.Recommended); err != nil {
+		log.Fatalf("seed self-improve policy: %v", err)
+	}
 	if _, err := auth.CreatePolicy(ctx, "*", mattActor.ID, authority.Required); err != nil {
 		log.Fatalf("seed default policy: %v", err)
 	}
