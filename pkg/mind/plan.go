@@ -56,7 +56,7 @@ func (m *Mind) Plan(ctx context.Context, t *task.Task) ([]SubtaskSpec, error) {
 	// Use the system prompt by prepending it to the prompt (Claude CLI -p mode)
 	fullPrompt := planningSystemPrompt + "\n\n---\n\n" + prompt
 
-	result, err := InvokeClaude(ctx, m.repoDir, fullPrompt, "opus")
+	result, err := invokeClaudeFn(ctx, m.repoDir, fullPrompt, "opus")
 	if err != nil {
 		return nil, fmt.Errorf("plan invocation: %w", err)
 	}

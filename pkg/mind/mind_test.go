@@ -806,6 +806,44 @@ func TestFinishTaskBlocksOnGitError(t *testing.T) {
 	}
 }
 
+// TestExecuteTaskAutoCompletesOnErrAlreadyDone verifies that when Plan returns
+// ErrAlreadyDone, executeTask calls finishTask (which calls tasks.Complete) and
+// does NOT invoke executeDirectly (invokeClaudeFn is called exactly once — for
+// the planning phase only).
+func TestExecuteTaskAutoCompletesOnErrAlreadyDone(t *testing.T) {
+	origGit, origInvoke, origBuild := gitCommitAndPushFn, invokeClaudeFn, buildAndTestFn
+	defer restoreGitFns(origGit, origInvoke, origBuild)
+
+	callCount := 0
+	invokeClaudeFn = func(_ context.Context, _, _, _ string) (*ClaudeResult, error) {
+		callCount++
+		// Return a response that isAlreadyDone() will recognise, with no [TASK:...] tags.
+		return &ClaudeResult{ExitCode: 0, Result: "This task is already done."}, nil
+	}
+	gitCommitAndPushFn = func(_ context.Context, _, _ string) error {
+		return ErrNothingToPush
+	}
+	buildAndTestFn = func(_ context.Context, _ string) error { return nil }
+
+	ts := newMockTaskStore()
+	addTask(ts, "et-already-done", "in_progress", "mind", time.Now(), nil)
+
+	m := newTestMind(ts)
+	tk := ts.tasks["et-already-done"]
+	m.executeTask(context.Background(), tk, nil)
+
+	stored := ts.tasks["et-already-done"]
+	if stored.Status != "completed" {
+		t.Errorf("expected status=completed on ErrAlreadyDone, got %q", stored.Status)
+	}
+	// Plan is the only Claude invocation on the ErrAlreadyDone path.
+	// executeDirectly would require additional invocations, so exactly 1 call
+	// confirms executeDirectly was not invoked.
+	if callCount != 1 {
+		t.Errorf("invokeClaudeFn call count: want 1 (plan only), got %d", callCount)
+	}
+}
+
 // TestFinishTaskContinuesOnNothingToPush verifies that finishTask completes the
 // task normally when GitCommitAndPush returns ErrNothingToPush.
 func TestFinishTaskContinuesOnNothingToPush(t *testing.T) {
