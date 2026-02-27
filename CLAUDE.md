@@ -25,13 +25,13 @@ A mind running on a Fly machine. Claude Code CLI with full filesystem, git, go b
 
 ## Architecture
 
-Two binaries, one Fly machine, one `/data` volume, one Postgres:
+One process, one Fly machine, one `/data` volume, one Postgres:
 
-- **`cmd/server`** — HTTP API, WASM UI, SSE. Runs as `app`. Foreground process.
-- **`cmd/mind`** — Autonomous loop. Polls Postgres every 5s. Runs as `root`. Background. Restarts itself via `syscall.Exec`.
+- **`cmd/server`** — HTTP API, WASM UI, SSE. Mind runs as a goroutine in-process, sharing the event Bus.
+- **`cmd/mind`** — Standalone mind binary for dev/testing. In production, the mind runs inside the server.
 - **`cmd/eg`** — CLI for eventgraph, tasks, authority.
 
-The mind invokes Claude Code CLI to do work. Each invocation reads this file.
+The mind subscribes to the event Bus and reacts to `task.created` and `authority.resolved` events. A 60-second maintenance ticker handles housekeeping (stale recovery, blocked retry, self-assessment). The mind invokes Claude Code CLI to do work. Each invocation reads this file.
 
 ## Persistence
 
