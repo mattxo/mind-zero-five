@@ -186,6 +186,17 @@ func (s *mockAuthStoreWithPending) Pending(_ context.Context) ([]authority.Reque
 	return s.pending, nil
 }
 
+// trackingAuthStore extends mockAuthStore and records whether Create was called.
+type trackingAuthStore struct {
+	mockAuthStore
+	createCalled bool
+}
+
+func (s *trackingAuthStore) Create(_ context.Context, action, description, source string, level authority.Level) (*authority.Request, error) {
+	s.createCalled = true
+	return &authority.Request{ID: "auth-tracked"}, nil
+}
+
 // --- Helpers ---
 
 func newTestMind(ts task.Store) *Mind {
@@ -865,5 +876,38 @@ func TestFinishTaskContinuesOnNothingToPush(t *testing.T) {
 	// Task must be completed (not blocked) even though the tree was already clean.
 	if stored.Status != "completed" {
 		t.Errorf("expected status=completed on ErrNothingToPush, got %q", stored.Status)
+	}
+}
+
+// TestMaybeAssessGuardWhenPendingProposalSet verifies that maybeAssess returns
+// immediately without invoking Assess or creating an authority request when
+// pendingProposal is already set.
+func TestMaybeAssessGuardWhenPendingProposalSet(t *testing.T) {
+	tracker := &trackingEventStore{}
+	authTracker := &trackingAuthStore{}
+
+	m := &Mind{
+		events:          tracker,
+		tasks:           newMockTaskStore(),
+		auth:            authTracker,
+		actorID:         "mind",
+		repoDir:         "/tmp",
+		assessInterval:  1 * time.Millisecond, // very short — assessment would be due immediately
+		lastAssessment:  time.Time{},           // zero — would trigger assessment if not guarded
+		pendingProposal: "existing-proposal-id",
+	}
+
+	m.maybeAssess(context.Background())
+
+	// No mind.assess.started event should have been emitted — Assess must not run.
+	for _, e := range tracker.emitted {
+		if e == "mind.assess.started" {
+			t.Errorf("maybeAssess must not start assessment when pendingProposal is set, but got event %q", e)
+		}
+	}
+
+	// auth.Create must not have been called — no new authority request.
+	if authTracker.createCalled {
+		t.Error("maybeAssess must not create an authority request when pendingProposal is already set")
 	}
 }

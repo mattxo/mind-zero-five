@@ -67,35 +67,61 @@ go build -o /usr/local/bin/eg ./cmd/eg
 
 `cmd/ui` is WASM-only — exclude from native builds. Always verify the build before marking work complete.
 
-## The EventGraph
+## The `eg` CLI
+
+All commands output JSON by default. Add `--format=short` to list/search commands for compact one-line output.
+
+### Events
 
 Your memory and audit trail. Every significant action is an event.
 
 ```bash
 eg event create --type=mind.learned --source=mind --content='{"lesson":"..."}'
-eg event list --type=task --limit=10
-eg event search "authentication"
-eg event verify
+eg event list --type=task --limit=10                  # JSON
+eg event list --limit=5 --format=short                # compact table
+eg event search "authentication" --format=short
+eg event get <id>
+eg event ancestors <id> --depth=5                     # walk causal chain up
+eg event descendants <id> --depth=5                   # walk causal chain down
+eg event types                                        # list distinct event types
+eg event sources                                      # list distinct sources
+eg event verify                                       # verify hash chain integrity
 ```
 
 **Record what you learn.** Search before repeating mistakes. The eventgraph is institutional memory — use `mind.learned` events to preserve knowledge across restarts.
 
-## Tasks
+### Tasks
 
 ```bash
-eg task list --status=pending
+eg task list --status=pending --format=short
+eg task list --status=in_progress
+eg task create --subject="..." --description="..." --source=mind
+eg task get <id>
 eg task update <id> --status=in_progress --assignee=mind
+eg task update <id> --status=pending --assignee=""    # reset stale task
 eg task complete <id>
 ```
 
-## Authority
+### Authority
 
 ```bash
 eg authority request --action="deploy" --description="reason" --level=required
+eg authority list --status=pending
 eg authority check <id>
+eg authority resolve <id> --approved
+eg authority resolve <id> --rejected
 ```
 
 Levels: `required` (blocks), `recommended` (auto-approves 15min), `notification` (immediate).
+
+### Other
+
+```bash
+eg status                                             # system summary
+eg actor list                                         # registered actors
+eg policy list                                        # approval policies
+eg init                                               # initialize tables
+```
 
 ## No Silent Failures
 
