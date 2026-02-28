@@ -192,6 +192,14 @@ func (m *Mind) maintenance(ctx context.Context) {
 	m.retryBlockedTasks(ctx)
 	m.recoverStaleTasks(ctx)
 
+	// Check pending authority requests — may auto-approve proposals and create tasks.
+	if m.pendingRestart != "" {
+		m.checkRestart(ctx)
+	}
+	if m.pendingProposal != "" {
+		m.checkProposal(ctx)
+	}
+
 	if m.checkPendingTasks(ctx) {
 		return // found and started a task
 	}
