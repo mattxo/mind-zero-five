@@ -316,13 +316,10 @@ func (m *Mind) checkPendingTasks(ctx context.Context) bool {
 func (m *Mind) checkRestart(ctx context.Context) {
 	req, err := m.auth.Get(ctx, m.pendingRestart)
 	if err != nil {
-		log.Printf("mind: check restart authority %s: %v", m.pendingRestart, err)
-		m.logEvent(ctx, "mind.error", map[string]any{
-			"operation":    "checkRestart",
-			"authority_id": m.pendingRestart,
-			"error":        err.Error(),
-		}, nil)
-		m.pendingRestart = ""
+		// Do NOT clear pendingRestart on transient errors — the next maintenance
+		// tick will retry. Clearing here loses track of the request and causes
+		// duplicate proposals.
+		log.Printf("mind: check restart authority %s (will retry): %v", m.pendingRestart, err)
 		return
 	}
 
@@ -405,13 +402,11 @@ func (m *Mind) maybeAssess(ctx context.Context) {
 func (m *Mind) checkProposal(ctx context.Context) {
 	req, err := m.auth.Get(ctx, m.pendingProposal)
 	if err != nil {
-		log.Printf("mind: check proposal authority %s: %v", m.pendingProposal, err)
-		m.logEvent(ctx, "mind.error", map[string]any{
-			"operation":    "checkProposal",
-			"authority_id": m.pendingProposal,
-			"error":        err.Error(),
-		}, nil)
-		m.pendingProposal = ""
+		// Do NOT clear pendingProposal on transient errors — the next maintenance
+		// tick will retry. Clearing here loses track of the request, which causes
+		// maybeAssess to create duplicate proposals every cycle (the proposal
+		// deadlock).
+		log.Printf("mind: check proposal authority %s (will retry): %v", m.pendingProposal, err)
 		return
 	}
 
